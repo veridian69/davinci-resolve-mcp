@@ -325,6 +325,13 @@ def _try_connect():
 
 def _launch_resolve():
     """Launch DaVinci Resolve and wait for it to become available."""
+    # Running inside Resolve, there is nothing to launch: a stale handle means
+    # the project closed, not that the app is gone. Launching here would open a
+    # SECOND Resolve instance and then block ~60s waiting for it to answer.
+    bridge = sys.modules.get("DaVinciResolveScript")
+    if getattr(bridge, "__file__", None) == "<inproc-shim>":
+        logger.info("in-process bridge active; skipping Resolve auto-launch")
+        return False
     sys_name = platform.system().lower()
     if sys_name == "darwin":
         app_path = "/Applications/DaVinci Resolve/DaVinci Resolve.app"
