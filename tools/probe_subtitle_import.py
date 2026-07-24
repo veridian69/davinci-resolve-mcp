@@ -11,10 +11,13 @@ Run from Resolve: Workspace -> Console -> Py3 dropdown, then:
     exec(open("/path/to/davinci-resolve-mcp/tools/probe_subtitle_import.py").read())
 
 WHAT THIS DOES TO YOUR PROJECT
-  It writes. On the CURRENT timeline it may add a subtitle track and import a
-  three-line .srt into the media pool. Everything it adds is recorded and
-  removed in the cleanup phase, and the phase runs even when a step fails.
-  Open a scratch project first if that matters to you.
+  It writes. It creates its own scratch timeline, adds a subtitle track to it,
+  and imports a three-line .srt into the media pool. Everything it adds is
+  recorded and removed in the cleanup phase, which runs even when a step
+  fails, and the timeline you had open is restored as current.
+
+  It only touches your current timeline if CreateEmptyTimeline is refused, and
+  even then it removes only the tracks it added itself.
 
 ASCII-only on purpose: the console's open() defaults to US-ASCII, so a single
 accented character here fails the paste with UnicodeDecodeError.
@@ -25,6 +28,7 @@ import traceback
 
 REPO = globals().get("INPROC_REPO") or os.environ.get("INPROC_REPO")
 SRT_NAME = "probe_subtitle.srt"
+SCRATCH_TIMELINE_NAME = "probe_subtitle_scratch"
 
 # Deliberately ASCII. The point of the probe is the import path, not encoding,
 # and a non-ASCII payload would confound a failure here with the encoding bug.
@@ -74,11 +78,30 @@ def main():
     if project is None:
         print("no project open")
         return
-    tl = project.GetCurrentTimeline()
-    if tl is None:
-        print("no timeline open -- open one and re-run")
-        return
     media_pool = project.GetMediaPool()
+
+    # Prefer a scratch timeline over the one the user is working in. The probe
+    # adds a track and imports a clip; doing that to a real cut is rude even
+    # with cleanup, and a cleanup that half-fails leaves the mess in the wrong
+    # place. Falls back to the current timeline only if creation is refused.
+    tl = None
+    scratch_timeline = None
+    previous_timeline = project.GetCurrentTimeline()
+    try:
+        scratch_timeline = media_pool.CreateEmptyTimeline(SCRATCH_TIMELINE_NAME)
+    except Exception as exc:
+        print("  CreateEmptyTimeline raised: {}: {}".format(
+            type(exc).__name__, exc))
+    if scratch_timeline is not None:
+        project.SetCurrentTimeline(scratch_timeline)
+        tl = scratch_timeline
+    else:
+        tl = previous_timeline
+
+    if tl is None:
+        print("no timeline available: could not create a scratch one and none "
+              "is open. Open any timeline and re-run.")
+        return
 
     print("=" * 68)
     print("SUBTITLE IMPORT PROBE")
@@ -155,23 +178,37 @@ def main():
                 _line("DeleteClips", _describe(ok))
         except Exception as exc:
             _line("DeleteClips failed", "{}: {}".format(type(exc).__name__, exc))
-        try:
-            now = tl.GetTrackCount("subtitle")
-            # Only remove tracks this probe is responsible for, and only the
-            # ones above the count we found on entry.
-            if added_track and now > before_tracks:
-                for idx in range(now, before_tracks, -1):
-                    _line("DeleteTrack subtitle {}".format(idx),
-                          _describe(tl.DeleteTrack("subtitle", idx)))
-        except Exception as exc:
-            _line("DeleteTrack failed", "{}: {}".format(type(exc).__name__, exc))
+        if scratch_timeline is not None:
+            # The whole timeline goes, tracks included, so there is nothing to
+            # undo track by track.
+            try:
+                if previous_timeline is not None:
+                    project.SetCurrentTimeline(previous_timeline)
+                _line("DeleteTimelines(scratch)",
+                      _describe(media_pool.DeleteTimelines([scratch_timeline])))
+            except Exception as exc:
+                _line("DeleteTimelines failed",
+                      "{}: {}".format(type(exc).__name__, exc))
+        else:
+            try:
+                now = tl.GetTrackCount("subtitle")
+                # Only remove tracks this probe is responsible for, and only
+                # the ones above the count we found on entry.
+                if added_track and now > before_tracks:
+                    for idx in range(now, before_tracks, -1):
+                        _line("DeleteTrack subtitle {}".format(idx),
+                              _describe(tl.DeleteTrack("subtitle", idx)))
+                _line("subtitle tracks after cleanup",
+                      tl.GetTrackCount("subtitle"))
+            except Exception as exc:
+                _line("DeleteTrack failed",
+                      "{}: {}".format(type(exc).__name__, exc))
         try:
             if os.path.exists(srt_path):
                 os.remove(srt_path)
                 _line("removed", srt_path)
         except Exception as exc:
             _line("remove failed", "{}: {}".format(type(exc).__name__, exc))
-        _line("subtitle tracks after cleanup", tl.GetTrackCount("subtitle"))
 
     print()
     print("probe done")

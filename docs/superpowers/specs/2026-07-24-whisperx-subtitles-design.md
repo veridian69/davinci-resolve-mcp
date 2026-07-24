@@ -1,7 +1,7 @@
 # Subtítulos autogenerados con whisperX
 
 **Fecha:** 2026-07-24
-**Estado:** diseño aprobado salvo la sección "Lado Resolve", bloqueada por una sonda
+**Estado:** diseño aprobado y completo; el camino de import quedó medido, no supuesto
 **Contexto previo:** [`2026-07-24-resolve-inproc-mcp-design.md`](2026-07-24-resolve-inproc-mcp-design.md)
 
 ## Objetivo
@@ -40,7 +40,7 @@ timeline item
    -> JSON: words con start/end/speaker              [tiempo de extracto]
    -> +offset -> tiempo de fuente -> tiempo de timeline
    -> agrupar por speaker -> un SRT por voz
-   -> pistas de subtítulo                            [PENDIENTE: ver "Lado Resolve"]
+   -> ImportMedia(srt) -> AppendToTimeline(trackIndex)  [una pista por hablante]
 ```
 
 Dos tools MCP, no una:
@@ -180,7 +180,36 @@ camino hay que comprobarlo en la primera corrida real. Si resulta que no, la
 alternativa es `huggingface-cli login` una vez, que deja el token en el keyring
 del usuario y tampoco lo pone en argv.
 
-## Lado Resolve — bloqueado
+## Lado Resolve — resuelto, rama A
+
+Medido con `tools/probe_subtitle_import.py` en Resolve 21.0.3.7 free, timeline
+de scratch:
+
+| Llamada | Resultado |
+|---|---|
+| `AddTrack("subtitle")` | `True`; el contador pasa de 0 a 1 |
+| `MediaPool.ImportMedia([srt])` | devuelve un MediaPoolItem con `Type: 'Subtitle'` |
+| `AppendToTimeline([item])` | devuelve 1 item, y la pista queda con **3** |
+
+El SRT de prueba tenía tres cues: Resolve lo importó como un clip y lo expandió
+en tres items de subtítulo sobre la pista. `Duration` salió `00:00:01:12`, que a
+24 fps es exactamente el 0.5s→2.0s del archivo. No solo lo aceptó, lo
+interpretó bien.
+
+**El camino es un archivo de texto, no miles de objetos de Fusion.** La rama B
+queda descartada y no necesita spec propio.
+
+Para una pista por hablante:
+`AppendToTimeline([{"mediaPoolItem": item, "trackIndex": n, "recordFrame": f}])`
+(`:223`), y `SetTrackName("subtitle", n, speaker)` (`:379`) para nombrarlas.
+
+**Sin verificar todavía**, y es lo único que queda del lado Resolve: los
+`mediaType` documentados son 1=video y 2=audio, sin valor para subtítulo, así
+que falta comprobar que `trackIndex` rutee a la pista de subtítulos correcta
+cuando el item es de tipo `Subtitle`. Es el argumento de una llamada, no una
+decisión de arquitectura.
+
+## Apéndice: la pregunta que estaba bloqueada
 
 La referencia de la API documenta pistas de subtítulo (`AddTrack`,
 `GetTrackCount`, `GetItemListInTrack` aceptan `"subtitle"`;
@@ -191,20 +220,15 @@ ninguna forma de crear un item de subtítulo**. `CreateSubtitlesFromAudio` es el
 
 No hay una sola línea en el repo que importe un `.srt`.
 
-`tools/probe_subtitle_import.py` resuelve la pregunta. Prueba `AddTrack`,
-`MediaPool.ImportMedia([srt])` y `AppendToTimeline`, y limpia lo que agregó en un
-`finally`.
+No hay una sola línea en el repo que importe un `.srt`, así que no había forma
+de contestarlo leyendo código. Se contestó midiendo, con
+`tools/probe_subtitle_import.py`, que se crea su propio timeline de scratch,
+prueba las tres llamadas y borra todo en un `finally`.
 
-**Rama A — `ImportMedia` acepta el `.srt`.** Una pista de subtítulo por hablante,
-un import por SRT. Trabajo acotado.
-
-**Rama B — lo rechaza.** Text+ de Fusion por cue sobre una pista de video. Fusion
-está en la edición gratis, así que es viable, pero es otro orden de magnitud:
-miles de items, estilos por Fusion, y un costo de rendimiento que hay que medir
-antes de prometerlo. Si cae acá, merece su propia decisión y probablemente su
-propio spec.
-
-No se diseña más allá de esto hasta tener el resultado.
+Se guarda esto porque la conclusión —que la API acepta `.srt` aunque no lo
+documente— es exactamente el tipo de cosa que alguien va a volver a dudar, y
+porque la sonda sigue sirviendo para reconfirmarla contra una versión nueva de
+Resolve.
 
 ## Testing
 
