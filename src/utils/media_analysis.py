@@ -3829,6 +3829,12 @@ def _normalize_word_timestamps(raw_words: Any) -> List[Dict[str, Any]]:
             value = _parse_float(raw_word.get(key))
             if value is not None:
                 word[key] = value
+        # Per-word diarization label. Kept separately from the numeric keys
+        # above because it is a string, and because a word can carry a
+        # different speaker than the segment it sits in at a turn boundary.
+        speaker = raw_word.get("speaker")
+        if speaker:
+            word["speaker"] = str(speaker)
         words.append({key: value for key, value in word.items() if value not in (None, "")})
     return words
 
@@ -3846,6 +3852,13 @@ def _normalize_transcript_payload(raw: Dict[str, Any], backend: str, language: O
             "end": end,
             "text": str(segment.get("text", "")).strip(),
         }
+        # Diarizing backends (whisperx --diarize) label every segment. Without
+        # this the label enters the parser and leaves at neither end, and
+        # splitting a transcript per speaker becomes impossible downstream.
+        # Backends that do not diarize never emit the key.
+        speaker = segment.get("speaker")
+        if speaker:
+            normalized_segment["speaker"] = str(speaker)
         words = _normalize_word_timestamps(segment.get("words"))
         if words:
             normalized_segment["words"] = words
