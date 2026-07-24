@@ -25,7 +25,11 @@ from src.utils.media_analysis import (
     _whisperx_argv,
     _whisperx_env,
 )
-from src.utils.subtitles import group_segments_by_speaker
+from src.utils.subtitles import (
+    SourceWriteRefused,
+    audio_extract_argv,
+    group_segments_by_speaker,
+)
 from src.utils.subtitle_timing import (
     RetimeNotSupported,
     source_seconds_to_timeline_frame,
@@ -403,6 +407,46 @@ class SpeakerSplitTests(unittest.TestCase):
 
         self.assertEqual(len(groups), 1)
         self.assertEqual(len(next(iter(groups.values()))), 1)
+
+
+class AudioExtractTests(unittest.TestCase):
+    """Transcribing the used range instead of the whole clip.
+
+    whisperx decodes internally, so extracting a whole file first is pure
+    waste. Extracting a *range* is not: eight seconds of a two-hour clip is
+    the difference between usable and unusable on CPU.
+    """
+
+    def test_only_the_requested_range_is_decoded(self):
+        argv = audio_extract_argv("/media/take01.mov", "/work/clip.wav",
+                                  start_seconds=12.5, end_seconds=20.5)
+
+        self.assertEqual(_flag_value(argv, "-ss"), "12.5")
+        # Duration rather than an absolute end: with -ss applied first, -to
+        # would be measured from the seek point on some ffmpeg builds, and -t
+        # means the same thing everywhere.
+        self.assertEqual(_flag_value(argv, "-t"), "8.0")
+
+    def test_output_is_the_16k_mono_whisper_expects(self):
+        argv = audio_extract_argv("/media/take01.mov", "/work/clip.wav",
+                                  start_seconds=0.0, end_seconds=1.0)
+
+        self.assertEqual(_flag_value(argv, "-ar"), "16000")
+        self.assertEqual(_flag_value(argv, "-ac"), "1")
+        self.assertIn("-vn", argv)
+        self.assertEqual(argv[-1], "/work/clip.wav")
+
+    def test_refuses_to_write_over_the_source(self):
+        """AGENTS.md makes source media read-only. A path bug must not be
+        the thing standing between a typo and someone's camera original."""
+        with self.assertRaises(SourceWriteRefused):
+            audio_extract_argv("/media/take01.mov", "/media/take01.mov",
+                               start_seconds=0.0, end_seconds=1.0)
+
+    def test_refuses_to_write_into_the_source_directory(self):
+        with self.assertRaises(SourceWriteRefused):
+            audio_extract_argv("/media/take01.mov", "/media/take01.wav",
+                               start_seconds=0.0, end_seconds=1.0)
 
 
 class TimelineMappingTests(unittest.TestCase):
