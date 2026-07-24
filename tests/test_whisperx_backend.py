@@ -100,17 +100,22 @@ def _flag_value(argv, flag):
 class WhisperxArgvTests(unittest.TestCase):
     """The CLI's own defaults are wrong for every Mac, so the wrapper sets them."""
 
-    def test_defaults_target_cpu_because_ctranslate2_has_no_metal_backend(self):
+    def test_device_and_compute_type_are_left_to_whisperx(self):
+        """whisperx already picks both:
+
+            --device       default="cuda" if torch.cuda.is_available() else "cpu"
+            --compute_type default="default"  # float16 on GPU, float32 on CPU
+
+        Sending our own would override that detection -- forcing "cpu" would
+        turn off the GPU on a machine that has one, and forcing int8 would
+        quietly trade accuracy the caller never agreed to give up.
+        """
         argv = _whisperx_argv("whisperx", "/media/take01.mov", "/work", {})
 
-        # whisperx defaults to --device cuda --compute_type float16. Neither
-        # exists on Apple Silicon: CTranslate2 ships no Metal backend, and
-        # float16 is not a CPU compute type.
-        self.assertEqual(_flag_value(argv, "--device"), "cpu")
-        self.assertEqual(_flag_value(argv, "--compute_type"), "int8")
+        self.assertIsNone(_flag_value(argv, "--device"))
+        self.assertIsNone(_flag_value(argv, "--compute_type"))
 
-    def test_caller_can_override_the_device(self):
-        """The defaults are a floor, not a cage -- a CUDA box should work."""
+    def test_caller_can_still_pin_device_and_compute_type(self):
         argv = _whisperx_argv(
             "whisperx", "/media/take01.mov", "/work",
             {"device": "cuda", "compute_type": "float16"},
@@ -118,6 +123,21 @@ class WhisperxArgvTests(unittest.TestCase):
 
         self.assertEqual(_flag_value(argv, "--device"), "cuda")
         self.assertEqual(_flag_value(argv, "--compute_type"), "float16")
+
+    def test_output_format_defaults_to_json_because_the_backend_parses_it(self):
+        argv = _whisperx_argv("whisperx", "/media/take01.mov", "/work", {})
+
+        self.assertEqual(_flag_value(argv, "--output_format"), "json")
+
+    def test_output_format_all_is_allowed_and_still_yields_json(self):
+        """`all` writes srt/vtt/txt/tsv/json/aud in one pass, so the caller
+        gets subtitle files without a second run and the backend still has
+        its JSON to parse."""
+        argv = _whisperx_argv("whisperx", "/media/take01.mov", "/work",
+                              {"output_format": "all"})
+
+        self.assertEqual(_flag_value(argv, "--output_format"), "all")
+        self.assertEqual(argv.count("--output_format"), 1)
 
     def test_diarization_flags_pass_through(self):
         argv = _whisperx_argv(

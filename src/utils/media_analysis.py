@@ -3926,11 +3926,11 @@ def _write_transcript_artifacts(payload: Dict[str, Any], artifacts: Dict[str, An
         _write_text(artifacts["transcript_vtt"], segments_to_vtt(payload.get("segments", [])))
 
 
-# whisperx defaults to --device cuda --compute_type float16. On Apple Silicon
-# neither exists: CTranslate2 ships no Metal backend, so the ASR stage is CPU
-# only, and float16 is not a CPU compute type. Callers on a CUDA box override.
-WHISPERX_DEFAULT_DEVICE = "cpu"
-WHISPERX_DEFAULT_COMPUTE_TYPE = "int8"
+# json carries the word timings and speaker labels; srt and vtt flatten them
+# away, and the backend parses the JSON. "all" is a legitimate override -- it
+# writes every format in one pass, so a caller who wants subtitle files gets
+# them without a second transcription, and the JSON is still there to parse.
+WHISPERX_DEFAULT_OUTPUT_FORMAT = "json"
 
 
 # Options forwarded verbatim as `--flag value`. The point of this backend is to
@@ -3945,7 +3945,7 @@ WHISPERX_VALUE_FLAGS = (
     "length_penalty", "initial_prompt", "hotwords", "suppress_tokens",
     "max_line_width", "max_line_count", "segment_resolution", "device_index",
     "temperature_increment_on_fallback", "compression_ratio_threshold",
-    "logprob_threshold", "no_speech_threshold",
+    "logprob_threshold", "no_speech_threshold", "device", "compute_type",
 )
 
 # Options forwarded as bare `--flag` when truthy. These are argparse
@@ -4021,17 +4021,18 @@ def _whisperx_env(transcription: Dict[str, Any], base_env: Optional[Dict[str, st
 
 def _whisperx_argv(executable: str, audio_path: str, output_dir: str, transcription: Dict[str, Any]) -> List[str]:
     """Build the whisperx command line."""
+    # device and compute_type are deliberately absent: whisperx already
+    # resolves them (`"cuda" if torch.cuda.is_available() else "cpu"`, and a
+    # compute type of "default" that means float16 on GPU, float32 on CPU).
+    # Sending our own would override that detection -- pinning "cpu" would turn
+    # off a GPU that exists, and pinning int8 would trade accuracy the caller
+    # never agreed to give up. They pass through below when asked for.
     argv = [
         executable,
         audio_path,
         "--output_dir", output_dir,
-        # json carries the word timings and speaker labels; the other formats
-        # flatten them away. SRT is written from the parsed payload instead, so
-        # every backend produces the same artifacts.
-        "--output_format", "json",
-        "--device", str(transcription.get("device") or WHISPERX_DEFAULT_DEVICE),
-        "--compute_type", str(transcription.get("compute_type")
-                              or WHISPERX_DEFAULT_COMPUTE_TYPE),
+        "--output_format", str(transcription.get("output_format")
+                               or WHISPERX_DEFAULT_OUTPUT_FORMAT),
     ]
     for name in WHISPERX_BOOLEAN_FLAGS:
         if _coerce_bool(transcription.get(name), default=False):

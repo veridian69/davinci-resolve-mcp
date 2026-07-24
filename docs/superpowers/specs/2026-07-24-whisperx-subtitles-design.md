@@ -26,9 +26,15 @@ Todo lo de esta tabla se comprobó contra la fuente, no contra la memoria.
 | `torch~=2.8` + `pyannote-audio>=4.0` | `pyproject.toml` | ~2-3 GB. Venv propio, fuera del repo y fuera de `.inproc/deps`. |
 | Diarización necesita modelos gated de HF | `--hf_token`, `--diarize_model pyannote/speaker-diarization-community-1` | Credencial del usuario. Ver "Seguridad". |
 
-Defaults del CLI que el wrapper tiene que pisar en macOS: `--device` viene
-`cuda` y `--compute_type` viene `float16`. Ninguno de los dos existe acá; van
-`cpu` e `int8`.
+El wrapper **no** pisa `--device` ni `--compute_type`. whisperX ya los
+resuelve solo (`"cuda" if torch.cuda.is_available() else "cpu"`, y un
+compute type `"default"` que significa float16 en GPU y float32 en CPU).
+Mandar los nuestros anularía esa deteccion: clavar `cpu` apagaria una GPU que
+existe, y clavar `int8` cambiaria precision por velocidad sin que nadie lo
+pidiera. Pasan solo cuando el caller los nombra.
+
+Esto estuvo mal en una version anterior de este spec, que afirmaba que los
+defaults eran `cuda`/`float16`. Venia del README de whisperX, no del argparse.
 
 ## Arquitectura
 
