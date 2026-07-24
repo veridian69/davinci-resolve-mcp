@@ -3943,13 +3943,25 @@ WHISPERX_VALUE_FLAGS = (
     "vad_offset", "chunk_size", "min_speakers", "max_speakers",
     "diarize_model", "temperature", "beam_size", "best_of", "patience",
     "length_penalty", "initial_prompt", "hotwords", "suppress_tokens",
-    "max_line_width", "max_line_count", "segment_resolution",
+    "max_line_width", "max_line_count", "segment_resolution", "device_index",
+    "temperature_increment_on_fallback", "compression_ratio_threshold",
+    "logprob_threshold", "no_speech_threshold",
 )
 
-# Options forwarded as bare `--flag` when truthy.
+# Options forwarded as bare `--flag` when truthy. These are argparse
+# `action="store_true"` and take no value.
 WHISPERX_BOOLEAN_FLAGS = (
     "diarize", "no_align", "return_char_alignments", "speaker_embeddings",
     "suppress_numerals",
+)
+
+# A third category, and the reason there are three: whisperx declares these as
+# `type=str2bool`, so they take an explicit True/False. Emitted bare they would
+# swallow the following argument as their value. False must survive too -- it
+# turns a default-on option off, so it is a value rather than an absence.
+WHISPERX_STR2BOOL_FLAGS = (
+    "highlight_words", "print_progress", "condition_on_previous_text",
+    "model_cache_only",
 )
 
 
@@ -3986,6 +3998,11 @@ def _whisperx_argv(executable: str, audio_path: str, output_dir: str, transcript
     for name in WHISPERX_BOOLEAN_FLAGS:
         if _coerce_bool(transcription.get(name), default=False):
             argv.append(f"--{name}")
+    for name in WHISPERX_STR2BOOL_FLAGS:
+        if name in transcription and transcription[name] is not None:
+            argv.extend([f"--{name}",
+                         "True" if _coerce_bool(transcription[name],
+                                                default=False) else "False"])
     for name in WHISPERX_VALUE_FLAGS:
         value = transcription.get(name)
         if value is not None and value != "":

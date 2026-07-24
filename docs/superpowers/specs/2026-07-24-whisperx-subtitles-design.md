@@ -174,11 +174,12 @@ El token va por **entorno** (`HF_TOKEN`), no por `--hf_token` en argv.
 El token no se escribe en ningún artefacto, ni en el JSON de transcripción, ni
 en el log. Lo provee el usuario; no se genera ni se pide interactivamente.
 
-**Sin verificar:** que pyannote tome el token del entorno cuando `--hf_token`
-está ausente. huggingface_hub lee `HF_TOKEN`, pero que whisperX no pise ese
-camino hay que comprobarlo en la primera corrida real. Si resulta que no, la
-alternativa es `huggingface-cli login` una vez, que deja el token en el keyring
-del usuario y tampoco lo pone en argv.
+**Verificado** contra el código instalado (3.8.6), que era lo que faltaba: en
+`whisperx/transcribe.py`, cuando `--hf_token` está ausente el propio whisperX
+advierte que el token *"needs to be saved in environment variable"* y pasa
+`use_auth_token=None` a `Pipeline.from_pretrained`, donde huggingface_hub cae al
+token del entorno. La variable no es un rodeo: es el camino que whisperX
+documenta en su propio warning.
 
 ## Lado Resolve — resuelto, rama A
 

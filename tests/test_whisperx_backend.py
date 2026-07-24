@@ -8,12 +8,16 @@ installed on the machine running them.
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
 import unittest.mock
 
 from src.utils.media_analysis import (
+    WHISPERX_BOOLEAN_FLAGS,
+    WHISPERX_STR2BOOL_FLAGS,
+    WHISPERX_VALUE_FLAGS,
     detect_capabilities,
     _normalize_transcript_payload,
     _transcribe,
@@ -118,6 +122,29 @@ class WhisperxArgvTests(unittest.TestCase):
         self.assertIn("--diarize", argv)
         self.assertEqual(_flag_value(argv, "--min_speakers"), "2")
         self.assertEqual(_flag_value(argv, "--max_speakers"), "3")
+
+    def test_str2bool_flags_are_emitted_with_an_explicit_value(self):
+        """--highlight_words is `type=str2bool`, not `action="store_true"`.
+
+        Emitted bare it would swallow the next argument as its value, so the
+        three categories cannot be collapsed into two.
+        """
+        argv = _whisperx_argv(
+            "whisperx", "/media/take01.mov", "/work",
+            {"highlight_words": True},
+        )
+
+        self.assertEqual(_flag_value(argv, "--highlight_words"), "True")
+
+    def test_str2bool_flags_can_be_switched_off_explicitly(self):
+        """False has to survive: it is a value, not an absence."""
+        argv = _whisperx_argv(
+            "whisperx", "/media/take01.mov", "/work",
+            {"condition_on_previous_text": False},
+        )
+
+        self.assertEqual(_flag_value(argv, "--condition_on_previous_text"),
+                         "False")
 
     def test_hugging_face_token_never_reaches_the_command_line(self):
         """A token in argv is readable by any process on the box via `ps`."""
@@ -304,6 +331,39 @@ class CapabilityDetectionTests(WhisperxBackendTests):
             capabilities = detect_capabilities()
 
         self.assertNotIn("whisperx", capabilities["transcription"]["backends"])
+
+
+class InstalledCliDriftTests(unittest.TestCase):
+    """Guards the flag list against the CLI it claims to wrap.
+
+    The flag tables were first written from whisperX's main branch while the
+    installed version was older, and shipped a --hotwords that the installed
+    CLI rejected outright. Only a real binary can catch that, so this test
+    skips when there is none rather than pretending to.
+    """
+
+    def setUp(self):
+        self.executable = (os.environ.get("WHISPERX_BIN")
+                           or shutil.which("whisperx"))
+        if not self.executable or not os.path.exists(self.executable):
+            self.skipTest("whisperx not installed")
+
+    def test_every_advertised_flag_exists_in_the_installed_cli(self):
+        help_text = subprocess.run(
+            [self.executable, "--help"],
+            capture_output=True, text=True, timeout=120,
+        ).stdout
+
+        unknown = [
+            name for name in (WHISPERX_VALUE_FLAGS + WHISPERX_BOOLEAN_FLAGS
+                         + WHISPERX_STR2BOOL_FLAGS)
+            if f"--{name}" not in help_text
+        ]
+
+        self.assertEqual(
+            unknown, [],
+            f"advertised but absent from the installed whisperx: {unknown}",
+        )
 
 
 class SpeakerSplitTests(unittest.TestCase):
