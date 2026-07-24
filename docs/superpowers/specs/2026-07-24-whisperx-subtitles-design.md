@@ -231,6 +231,35 @@ documente— es exactamente el tipo de cosa que alguien va a volver a dudar, y
 porque la sonda sigue sirviendo para reconfirmarla contra una versión nueva de
 Resolve.
 
+## Medido contra whisperX real
+
+whisperx 3.8.6 sobre Python 3.12.12, macOS, CPU. Audio de prueba: cuatro turnos
+alternados de dos voces sintéticas, 16.2 s.
+
+| Qué | Resultado |
+|---|---|
+| Pipeline completo | VAD → transcripción → alineación → diarización, exit 0 |
+| Diarización | 4 segmentos, 2 hablantes, **las cuatro asignaciones correctas** contra la construcción del audio |
+| Etiquetas tras normalizar | 60/60 palabras y 4/4 segmentos conservan `speaker` |
+| Agrupado | 2 pistas, 2 cues cada una, SRT bien formado |
+| Extracción de rango | 5.0–11.0 s de un archivo de 21 s → 6.000000 s exactos, 16000 Hz, mono |
+
+**El token por entorno quedó confirmado por observación.** whisperX loguea
+*"No --hf_token provided, needs to be saved in environment variable"* y acto
+seguido carga el modelo gated y diariza. El warning es sobre el flag ausente,
+no sobre el token: huggingface_hub lo tomó de `HF_TOKEN`.
+
+Dos cosas que solo aparecieron corriendo lo real:
+
+1. **La etiqueta de una palabra puede discrepar de la de su segmento** en el
+   borde de un turno. Era hipotético cuando se escribió el test; está observado.
+2. **El VAD descarta audio que no reconoce como habla.** Un primer fixture usó
+   una voz de personaje de macOS y whisper la alucinó como `"¡Suscríbete!"`,
+   perdiendo 12 de 21 segundos. No es un fallo del pipeline, pero sí un aviso:
+   material con audio pobre va a perder tramos en silencio.
+
+**Sin medir:** velocidad sobre material real. El fixture es de 16 segundos.
+
 ## Testing
 
 - **Backend:** un `whisperx` falso en el PATH que escupe JSON fijo con
