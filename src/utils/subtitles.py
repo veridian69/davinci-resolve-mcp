@@ -82,6 +82,57 @@ def group_segments_by_speaker(segments):
     return groups
 
 
+def split_segments_on_speaker_change(segments):
+    """Re-cut segments so each one holds a single speaker.
+
+    whisperx labels a segment with whichever speaker overlapped it longest
+    (`diarize.py`: `max(speaker_intersections.items(), key=...)`). With
+    --chunk_size at its default of 30, a single segment can hold half a minute
+    of several people talking and still carry one label -- so grouping by that
+    label would put a whole conversation on one subtitle track.
+
+    The words underneath keep their own, correct labels, so they are what this
+    re-cuts on. Segments without words pass through: there is nothing better to
+    go on than the label they already have.
+    """
+    out = []
+    for segment in segments:
+        words = segment.get("words")
+        if not words:
+            out.append(segment)
+            continue
+
+        run = []
+        run_speaker = _MISSING = object()
+        for word in words:
+            speaker = word.get("speaker")
+            if run and speaker != run_speaker:
+                out.append(_segment_from_words(segment, run, run_speaker))
+                run = []
+            run_speaker = speaker
+            run.append(word)
+        if run:
+            out.append(_segment_from_words(segment, run, run_speaker))
+    return out
+
+
+def _segment_from_words(original, words, speaker):
+    """One speaker's run of words as a segment in its own right.
+
+    Times come from the words rather than the parent, because the parent spans
+    every speaker in it and would put each piece at the full chunk's start.
+    """
+    piece = {
+        "start": words[0].get("start", original.get("start")),
+        "end": words[-1].get("end", words[-1].get("start", original.get("end"))),
+        "text": " ".join(str(w.get("word", "")).strip() for w in words).strip(),
+        "words": words,
+    }
+    if speaker:
+        piece["speaker"] = speaker
+    return piece
+
+
 def speaker_filename_stem(speaker):
     """A filename fragment that cannot escape its directory.
 
@@ -103,8 +154,11 @@ def write_speaker_srt_files(payload, out_dir, prefix=""):
 
     os.makedirs(out_dir, exist_ok=True)
     written = []
-    for speaker, segments in group_segments_by_speaker(
-            payload.get("segments") or []).items():
+    # Split first: a segment's own label is a majority vote and lies on any
+    # chunk holding more than one voice, which at whisperx's default
+    # --chunk_size of 30 is most of a real conversation.
+    homogeneous = split_segments_on_speaker_change(payload.get("segments") or [])
+    for speaker, segments in group_segments_by_speaker(homogeneous).items():
         stem = speaker_filename_stem(speaker)
         path = os.path.join(out_dir, f"{prefix}{stem}.srt")
         # segments_to_srt numbers cues from one over whatever list it gets, so

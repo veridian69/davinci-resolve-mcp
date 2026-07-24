@@ -30,6 +30,7 @@ from src.utils.subtitles import (
     SourceWriteRefused,
     audio_extract_argv,
     group_segments_by_speaker,
+    split_segments_on_speaker_change,
     write_speaker_srt_files,
 )
 from src.utils.subtitle_timing import (
@@ -521,6 +522,74 @@ class AudioExtractTests(unittest.TestCase):
                                start_seconds=0.0, end_seconds=1.0)
 
 
+class SpeakerHomogeneousSplitTests(unittest.TestCase):
+    """A segment's speaker is a majority vote, so it lies on mixed chunks.
+
+    whisperx sets seg['speaker'] to whichever speaker overlapped it longest
+    (diarize.py: `max(speaker_intersections.items(), key=...)`). With
+    --chunk_size at its default of 30, one segment can hold half a minute of
+    four people talking and still carry a single label. The words underneath
+    keep their own, correct labels.
+    """
+
+    MIXED_SEGMENT = {
+        "start": 0.0, "end": 6.0,
+        "text": "hola que tal bien gracias",
+        "speaker": "SPEAKER_00",           # the majority, and wrong for most of it
+        "words": [
+            {"word": "hola", "start": 0.0, "end": 1.0, "speaker": "SPEAKER_00"},
+            {"word": "que", "start": 1.0, "end": 2.0, "speaker": "SPEAKER_00"},
+            {"word": "tal", "start": 2.0, "end": 3.0, "speaker": "SPEAKER_01"},
+            {"word": "bien", "start": 3.0, "end": 4.0, "speaker": "SPEAKER_01"},
+            {"word": "gracias", "start": 4.0, "end": 6.0, "speaker": "SPEAKER_00"},
+        ],
+    }
+
+    def test_a_mixed_segment_splits_where_the_speaker_changes(self):
+        split = split_segments_on_speaker_change([self.MIXED_SEGMENT])
+
+        self.assertEqual([s["speaker"] for s in split],
+                         ["SPEAKER_00", "SPEAKER_01", "SPEAKER_00"])
+        self.assertEqual([s["text"] for s in split],
+                         ["hola que", "tal bien", "gracias"])
+
+    def test_split_segments_carry_the_times_of_their_own_words(self):
+        split = split_segments_on_speaker_change([self.MIXED_SEGMENT])
+
+        self.assertEqual((split[1]["start"], split[1]["end"]), (2.0, 4.0))
+
+    def test_a_homogeneous_segment_is_left_alone(self):
+        segment = {
+            "start": 0.0, "end": 2.0, "text": "hola que", "speaker": "SPEAKER_00",
+            "words": [
+                {"word": "hola", "start": 0.0, "end": 1.0, "speaker": "SPEAKER_00"},
+                {"word": "que", "start": 1.0, "end": 2.0, "speaker": "SPEAKER_00"},
+            ],
+        }
+
+        split = split_segments_on_speaker_change([segment])
+
+        self.assertEqual(len(split), 1)
+        self.assertEqual(split[0]["text"], "hola que")
+
+    def test_segments_without_words_pass_through_untouched(self):
+        """No word labels means nothing better to go on than the segment's."""
+        segment = {"start": 0.0, "end": 2.0, "text": "hola", "speaker": "S0"}
+
+        split = split_segments_on_speaker_change([segment])
+
+        self.assertEqual(split, [segment])
+
+    def test_grouping_a_mixed_segment_no_longer_collapses_the_conversation(self):
+        """The defect this whole class exists for: without the split, a
+        thirty-second chunk of four people becomes one speaker's track."""
+        groups = group_segments_by_speaker(
+            split_segments_on_speaker_change([self.MIXED_SEGMENT]))
+
+        self.assertEqual(sorted(groups), ["SPEAKER_00", "SPEAKER_01"])
+        self.assertEqual(len(groups["SPEAKER_00"]), 2)
+
+
 class SpeakerSrtFileTests(unittest.TestCase):
     """One SRT per voice on disk, which is what Resolve imports."""
 
@@ -553,6 +622,23 @@ class SpeakerSrtFileTests(unittest.TestCase):
 
         second = open(written[1]["path"], encoding="utf-8").read()
         self.assertTrue(second.lstrip().startswith("1\n"), second[:40])
+
+    def test_a_mixed_chunk_is_split_before_files_are_written(self):
+        """End of the chain: a 30s chunk of two people must not land whole on
+        one speaker's track just because that speaker talked longest."""
+        payload = {"segments": [{
+            "start": 0.0, "end": 4.0, "text": "hola tal", "speaker": "SPEAKER_00",
+            "words": [
+                {"word": "hola", "start": 0.0, "end": 2.0, "speaker": "SPEAKER_00"},
+                {"word": "tal", "start": 2.0, "end": 4.0, "speaker": "SPEAKER_01"},
+            ],
+        }]}
+
+        written = write_speaker_srt_files(payload, self.out)
+
+        self.assertEqual([w["speaker"] for w in written],
+                         ["SPEAKER_00", "SPEAKER_01"])
+        self.assertNotIn("tal", open(written[0]["path"], encoding="utf-8").read())
 
     def test_undiarized_transcript_writes_a_single_file(self):
         payload = {"segments": [{"start": 0.0, "end": 1.0, "text": "hola"}]}
