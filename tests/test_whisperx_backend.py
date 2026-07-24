@@ -14,6 +14,7 @@ import tempfile
 import unittest
 import unittest.mock
 
+from src.utils import media_analysis
 from src.utils.media_analysis import (
     WHISPERX_BOOLEAN_FLAGS,
     WHISPERX_STR2BOOL_FLAGS,
@@ -184,6 +185,56 @@ class WhisperxArgvTests(unittest.TestCase):
         env = _whisperx_env({}, base_env={"HF_TOKEN": "from-the-shell"})
 
         self.assertEqual(env.get("HF_TOKEN"), "from-the-shell")
+
+    def test_ffmpeg_lib_dir_reaches_the_dynamic_loader(self):
+        """torchcodec ships dylibs for FFmpeg 4-7 and refuses to load against
+        FFmpeg 8, so a side-by-side FFmpeg 7 has to be findable at runtime."""
+        env = _whisperx_env(
+            {}, base_env={"WHISPERX_FFMPEG_LIB": "/opt/ffmpeg@7/lib"})
+
+        self.assertIn("/opt/ffmpeg@7/lib", env.get("DYLD_LIBRARY_PATH", ""))
+
+    def test_existing_dyld_path_is_prepended_to_not_replaced(self):
+        env = _whisperx_env({}, base_env={
+            "WHISPERX_FFMPEG_LIB": "/opt/ffmpeg@7/lib",
+            "DYLD_LIBRARY_PATH": "/already/here",
+        })
+
+        self.assertEqual(env["DYLD_LIBRARY_PATH"],
+                         "/opt/ffmpeg@7/lib:/already/here")
+
+    def test_no_ffmpeg_lib_anywhere_leaves_the_loader_alone(self):
+        """Candidates are patched out: otherwise this passes or fails
+        depending on whether the machine running it happens to have
+        ffmpeg@7, which is not a property of the code."""
+        with unittest.mock.patch.object(
+                media_analysis, "WHISPERX_FFMPEG_LIB_CANDIDATES", ()):
+            env = _whisperx_env({}, base_env={})
+
+        self.assertNotIn("DYLD_LIBRARY_PATH", env)
+
+    def test_a_candidate_holding_only_ffmpeg8_libs_is_rejected(self):
+        """Homebrew leaves ffmpeg@6 and ffmpeg@7 pointing at whatever ffmpeg
+        is current after an upgrade, so the directory can exist and hold the
+        one libavutil torchcodec cannot use. Existence is not enough."""
+        with tempfile.TemporaryDirectory() as fake_lib:
+            open(os.path.join(fake_lib, "libavutil.60.dylib"), "w").close()
+            with unittest.mock.patch.object(
+                    media_analysis, "WHISPERX_FFMPEG_LIB_CANDIDATES",
+                    (fake_lib,)):
+                env = _whisperx_env({}, base_env={})
+
+        self.assertNotIn("DYLD_LIBRARY_PATH", env)
+
+    def test_a_candidate_holding_a_usable_libavutil_is_accepted(self):
+        with tempfile.TemporaryDirectory() as fake_lib:
+            open(os.path.join(fake_lib, "libavutil.59.dylib"), "w").close()
+            with unittest.mock.patch.object(
+                    media_analysis, "WHISPERX_FFMPEG_LIB_CANDIDATES",
+                    (fake_lib,)):
+                env = _whisperx_env({}, base_env={})
+
+        self.assertEqual(env.get("DYLD_LIBRARY_PATH"), fake_lib)
 
 
 FAKE_WHISPERX = '''#!{python}

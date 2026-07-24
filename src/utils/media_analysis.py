@@ -3965,6 +3965,31 @@ WHISPERX_STR2BOOL_FLAGS = (
 )
 
 
+# Where a torchcodec-compatible FFmpeg might be sitting alongside the current
+# one. Ordered newest first; a tuple so a test can replace it.
+WHISPERX_FFMPEG_LIB_CANDIDATES = (
+    "/opt/homebrew/opt/ffmpeg@7/lib",
+    "/usr/local/opt/ffmpeg@7/lib",
+    "/opt/homebrew/opt/ffmpeg@6/lib",
+    "/usr/local/opt/ffmpeg@6/lib",
+)
+
+
+def _detect_ffmpeg_lib_dir() -> Optional[str]:
+    """First candidate directory that actually holds a matching libavutil.
+
+    Existence of the directory is not enough: Homebrew leaves ffmpeg@6 and
+    ffmpeg@7 as symlinks to whatever ffmpeg is current after an upgrade, so
+    `/opt/homebrew/opt/ffmpeg@7/lib` can exist and contain FFmpeg 8's
+    libavutil.60 -- exactly the version torchcodec cannot use.
+    """
+    for candidate in WHISPERX_FFMPEG_LIB_CANDIDATES:
+        for soname in ("libavutil.59.dylib", "libavutil.58.dylib"):
+            if os.path.exists(os.path.join(candidate, soname)):
+                return candidate
+    return None
+
+
 def _whisperx_env(transcription: Dict[str, Any], base_env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
     """Environment for the whisperx subprocess, carrying the Hugging Face token.
 
@@ -3978,6 +4003,19 @@ def _whisperx_env(transcription: Dict[str, Any], base_env: Optional[Dict[str, st
     token = transcription.get("hf_token")
     if token:
         env["HF_TOKEN"] = str(token)
+
+    # torchcodec ships dylibs linked against FFmpeg 4 through 7 and refuses to
+    # load against FFmpeg 8, which is what Homebrew installs today. pyannote
+    # then falls back to another decoder and prints a forty-line traceback as a
+    # warning. Pointing the loader at a side-by-side FFmpeg 7 silences it.
+    # Configured rather than guessed, because the location is per-machine.
+    ffmpeg_lib = (transcription.get("ffmpeg_lib_dir")
+                  or env.get("WHISPERX_FFMPEG_LIB")
+                  or _detect_ffmpeg_lib_dir())
+    if ffmpeg_lib:
+        existing = env.get("DYLD_LIBRARY_PATH")
+        env["DYLD_LIBRARY_PATH"] = (f"{ffmpeg_lib}:{existing}" if existing
+                                    else str(ffmpeg_lib))
     return env
 
 
