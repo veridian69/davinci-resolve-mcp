@@ -6,8 +6,15 @@ apart from `subtitle_timing`, which stays purely numeric.
 """
 
 import os
+import re
 
 from collections import OrderedDict
+
+# Anything outside this becomes an underscore in a filename. Speaker labels
+# come out of a model, not out of a validator, and they end up in a path.
+_UNSAFE_IN_FILENAME = re.compile(r"[^A-Za-z0-9._-]+")
+
+UNDIARIZED_STEM = "transcript"
 
 
 class SourceWriteRefused(Exception):
@@ -73,3 +80,41 @@ def group_segments_by_speaker(segments):
         speaker = segment.get("speaker") or UNLABELLED_SPEAKER
         groups.setdefault(speaker, []).append(segment)
     return groups
+
+
+def speaker_filename_stem(speaker):
+    """A filename fragment that cannot escape its directory.
+
+    `os.path.basename` alone would not do: a label of ".." survives it.
+    """
+    cleaned = _UNSAFE_IN_FILENAME.sub("_", speaker or "").strip("._-")
+    return cleaned or UNDIARIZED_STEM
+
+
+def write_speaker_srt_files(payload, out_dir, prefix=""):
+    """Write one SRT per speaker and return what was written.
+
+    Resolve imports subtitle files, not transcript objects, and it puts one
+    file on one track -- so a track per voice means a file per voice.
+
+    Returns a list of {speaker, path, cue_count} in first-appearance order.
+    """
+    from src.utils.media_analysis import segments_to_srt
+
+    os.makedirs(out_dir, exist_ok=True)
+    written = []
+    for speaker, segments in group_segments_by_speaker(
+            payload.get("segments") or []).items():
+        stem = speaker_filename_stem(speaker)
+        path = os.path.join(out_dir, f"{prefix}{stem}.srt")
+        # segments_to_srt numbers cues from one over whatever list it gets, so
+        # each file is independently valid rather than carrying gaps where the
+        # other speaker's cues were.
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(segments_to_srt(segments))
+        written.append({
+            "speaker": speaker,
+            "path": path,
+            "cue_count": len(segments),
+        })
+    return written

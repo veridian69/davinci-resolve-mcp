@@ -30,6 +30,7 @@ from src.utils.subtitles import (
     SourceWriteRefused,
     audio_extract_argv,
     group_segments_by_speaker,
+    write_speaker_srt_files,
 )
 from src.utils.subtitle_timing import (
     RetimeNotSupported,
@@ -498,6 +499,59 @@ class AudioExtractTests(unittest.TestCase):
         with self.assertRaises(SourceWriteRefused):
             audio_extract_argv("/media/take01.mov", "/media/take01.wav",
                                start_seconds=0.0, end_seconds=1.0)
+
+
+class SpeakerSrtFileTests(unittest.TestCase):
+    """One SRT per voice on disk, which is what Resolve imports."""
+
+    PAYLOAD = {
+        "language": "es",
+        "segments": [
+            {"start": 0.0, "end": 1.0, "text": "hola", "speaker": "SPEAKER_00"},
+            {"start": 1.0, "end": 2.0, "text": "que tal", "speaker": "SPEAKER_01"},
+            {"start": 2.0, "end": 3.0, "text": "bien", "speaker": "SPEAKER_00"},
+        ],
+    }
+
+    def setUp(self):
+        self.out = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.out, True)
+
+    def test_one_file_per_speaker_with_only_that_speakers_cues(self):
+        written = write_speaker_srt_files(self.PAYLOAD, self.out)
+
+        self.assertEqual([w["speaker"] for w in written],
+                         ["SPEAKER_00", "SPEAKER_01"])
+        first = open(written[0]["path"], encoding="utf-8").read()
+        self.assertIn("hola", first)
+        self.assertIn("bien", first)
+        self.assertNotIn("que tal", first)
+
+    def test_cues_are_renumbered_from_one_within_each_file(self):
+        """An SRT whose first cue is numbered 3 is not a valid SRT."""
+        written = write_speaker_srt_files(self.PAYLOAD, self.out)
+
+        second = open(written[1]["path"], encoding="utf-8").read()
+        self.assertTrue(second.lstrip().startswith("1\n"), second[:40])
+
+    def test_undiarized_transcript_writes_a_single_file(self):
+        payload = {"segments": [{"start": 0.0, "end": 1.0, "text": "hola"}]}
+
+        written = write_speaker_srt_files(payload, self.out)
+
+        self.assertEqual(len(written), 1)
+        self.assertTrue(os.path.exists(written[0]["path"]))
+
+    def test_speaker_label_becomes_a_safe_filename(self):
+        """Labels reach us from a model, not from a validator."""
+        payload = {"segments": [
+            {"start": 0.0, "end": 1.0, "text": "x", "speaker": "../../etc/passwd"},
+        ]}
+
+        written = write_speaker_srt_files(payload, self.out)
+
+        self.assertEqual(os.path.dirname(os.path.abspath(written[0]["path"])),
+                         os.path.abspath(self.out))
 
 
 class TimelineMappingTests(unittest.TestCase):
