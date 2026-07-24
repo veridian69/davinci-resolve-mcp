@@ -16,6 +16,12 @@ A Model Context Protocol (MCP) server that lets AI assistants control DaVinci Re
 
 A local browser control panel ships with the server for inspecting Resolve state, running source-safe analysis, drilling into analyzed clips and shots, and editing analysis output inline. See the [Control Panel Guide](docs/guides/control-panel.md) for the full tour.
 
+> ### Using the **free edition**?
+>
+> The setup below needs Resolve **Studio**: the free edition disables the external scripting bridge, so `GetResolve()` returns `None` for any process outside Resolve. This fork adds a second path that runs the server *inside* Resolve's Python console, where that gate does not apply — all 341 granular tools, reads and writes, no Studio licence.
+>
+> **→ [README-FREE-EDITION.md](README-FREE-EDITION.md)**
+
 ## Quick Start
 
 ```bash
