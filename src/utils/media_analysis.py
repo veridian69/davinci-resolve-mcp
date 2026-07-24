@@ -1486,6 +1486,31 @@ TOOL_INSTALL: Dict[str, Dict[str, Any]] = {
         "verify": "whisper-cli --help",
         "notes": "Fastest CPU option. Choose this OR whisper_cli OR mlx_whisper.",
     },
+    "whisperx": {
+        "label": "whisperX",
+        "bundle": "transcription",
+        "required_for": [
+            "word-level subtitle timing (forced alignment)",
+            "speaker diarization",
+        ],
+        "commands": {
+            # Its own venv, not the server's: whisperx pins Python <3.14 and
+            # pulls torch and pyannote, which must not land in this interpreter.
+            "all": (
+                "python3.12 -m venv ~/.whisperx-venv && "
+                "~/.whisperx-venv/bin/pip install whisperx, then set "
+                "WHISPERX_BIN=~/.whisperx-venv/bin/whisperx"
+            ),
+        },
+        "verify": "whisperx --version",
+        "notes": (
+            "Requires Python >=3.10,<3.14 and ~2-3 GB of dependencies. The ASR "
+            "stage runs on CPU on Apple Silicon -- CTranslate2 has no Metal "
+            "backend -- so expect it to be slow there. Diarization additionally "
+            "needs a Hugging Face token with the pyannote gated models accepted; "
+            "pass it as HF_TOKEN in the environment, never on the command line."
+        ),
+    },
     "mlx_whisper": {
         "label": "mlx-whisper",
         "bundle": "transcription",
@@ -1616,6 +1641,9 @@ def detect_capabilities(env: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
     # openai-whisper Python CLI invoked as `whisper`.)
     whisper_cpp = shutil.which("whisper-cli") or shutil.which("whisper-cpp")
     mlx_whisper = importlib.util.find_spec("mlx_whisper") is not None
+    # Resolved through the same helper the dispatcher uses, so what is
+    # advertised here and what actually runs cannot drift apart.
+    whisperx = _resolve_whisperx_executable({"executable": env.get("WHISPERX_BIN")})
     cv2 = importlib.util.find_spec("cv2") is not None
     provider = env.get("DAVINCI_RESOLVE_MCP_VISION_PROVIDER")
 
@@ -1650,6 +1678,7 @@ def detect_capabilities(env: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
         "tools": {
             "ffprobe": _tool_entry("ffprobe", bool(shutil.which("ffprobe")), {"path": shutil.which("ffprobe")}),
             "ffmpeg": _tool_entry("ffmpeg", bool(shutil.which("ffmpeg")), {"path": shutil.which("ffmpeg")}),
+            "whisperx": _tool_entry("whisperx", bool(whisperx), {"path": whisperx}),
             "whisper_cli": _tool_entry("whisper_cli", bool(whisper_cli), {"path": whisper_cli}),
             "whisper_cpp": _tool_entry("whisper_cpp", bool(whisper_cpp), {"path": whisper_cpp}),
             "mlx_whisper": _tool_entry("mlx_whisper", bool(mlx_whisper), {"python_module": "mlx_whisper"}),
@@ -1672,9 +1701,14 @@ def detect_capabilities(env: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
         },
         "embeddings": embedding_caps,
         "transcription": {
-            "available": bool(whisper_cli or whisper_cpp or mlx_whisper),
+            "available": bool(whisper_cli or whisper_cpp or mlx_whisper or whisperx),
             "backends": [
                 name for name, available in (
+                    # First entry wins when no backend is named explicitly.
+                    # whisperx leads because it is the only one that produces
+                    # forced-aligned word timings and speaker labels, which is
+                    # what subtitles need.
+                    ("whisperx", bool(whisperx)),
                     ("whisper_cli", bool(whisper_cli)),
                     ("whisper_cpp", bool(whisper_cpp)),
                     ("mlx_whisper", bool(mlx_whisper)),
@@ -2254,13 +2288,14 @@ def build_plan(
     }
 
 
-def _run_command(args: List[str], timeout: int = COMMAND_TIMEOUT_SECONDS) -> Tuple[int, str, str]:
+def _run_command(args: List[str], timeout: int = COMMAND_TIMEOUT_SECONDS, env: Optional[Dict[str, str]] = None) -> Tuple[int, str, str]:
     try:
         proc = subprocess.run(
             args,
             capture_output=True,
             timeout=timeout,
             check=False,
+            env=env,
         )
     except subprocess.TimeoutExpired as exc:
         stdout = exc.stdout.decode("utf-8", errors="replace") if exc.stdout else ""
@@ -3891,6 +3926,118 @@ def _write_transcript_artifacts(payload: Dict[str, Any], artifacts: Dict[str, An
         _write_text(artifacts["transcript_vtt"], segments_to_vtt(payload.get("segments", [])))
 
 
+# whisperx defaults to --device cuda --compute_type float16. On Apple Silicon
+# neither exists: CTranslate2 ships no Metal backend, so the ASR stage is CPU
+# only, and float16 is not a CPU compute type. Callers on a CUDA box override.
+WHISPERX_DEFAULT_DEVICE = "cpu"
+WHISPERX_DEFAULT_COMPUTE_TYPE = "int8"
+
+
+# Options forwarded verbatim as `--flag value`. The point of this backend is to
+# be a thin wrapper, so the caller reaches whisperx's own surface rather than a
+# reinvented one. Deliberately absent: hf_token, which travels in the
+# environment instead -- see _whisperx_env.
+WHISPERX_VALUE_FLAGS = (
+    "model", "model_dir", "language", "task", "batch_size", "threads",
+    "align_model", "interpolate_method", "vad_method", "vad_onset",
+    "vad_offset", "chunk_size", "min_speakers", "max_speakers",
+    "diarize_model", "temperature", "beam_size", "best_of", "patience",
+    "length_penalty", "initial_prompt", "hotwords", "suppress_tokens",
+    "max_line_width", "max_line_count", "segment_resolution",
+)
+
+# Options forwarded as bare `--flag` when truthy.
+WHISPERX_BOOLEAN_FLAGS = (
+    "diarize", "no_align", "return_char_alignments", "speaker_embeddings",
+    "suppress_numerals",
+)
+
+
+def _whisperx_env(transcription: Dict[str, Any], base_env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+    """Environment for the whisperx subprocess, carrying the Hugging Face token.
+
+    The token authorises pyannote's gated diarization models. It travels here
+    rather than as `--hf_token` because anything on a command line is readable
+    by every process on the machine through `ps`, and because argparse can echo
+    arguments back in an error -- and this backend returns stderr verbatim to
+    the caller on failure.
+    """
+    env = dict(os.environ if base_env is None else base_env)
+    token = transcription.get("hf_token")
+    if token:
+        env["HF_TOKEN"] = str(token)
+    return env
+
+
+def _whisperx_argv(executable: str, audio_path: str, output_dir: str, transcription: Dict[str, Any]) -> List[str]:
+    """Build the whisperx command line."""
+    argv = [
+        executable,
+        audio_path,
+        "--output_dir", output_dir,
+        # json carries the word timings and speaker labels; the other formats
+        # flatten them away. SRT is written from the parsed payload instead, so
+        # every backend produces the same artifacts.
+        "--output_format", "json",
+        "--device", str(transcription.get("device") or WHISPERX_DEFAULT_DEVICE),
+        "--compute_type", str(transcription.get("compute_type")
+                              or WHISPERX_DEFAULT_COMPUTE_TYPE),
+    ]
+    for name in WHISPERX_BOOLEAN_FLAGS:
+        if _coerce_bool(transcription.get(name), default=False):
+            argv.append(f"--{name}")
+    for name in WHISPERX_VALUE_FLAGS:
+        value = transcription.get(name)
+        if value is not None and value != "":
+            argv.extend([f"--{name}", str(value)])
+    return argv
+
+
+def _resolve_whisperx_executable(transcription: Dict[str, Any]) -> Optional[str]:
+    """Locate the whisperx CLI.
+
+    It lives in its own virtualenv rather than on the default PATH: whisperx
+    requires Python >=3.10,<3.14 and pulls in torch and pyannote, so it cannot
+    share an interpreter with this server. WHISPERX_BIN is how a caller points
+    at that venv without putting it on PATH globally.
+    """
+    explicit = transcription.get("executable") or os.environ.get("WHISPERX_BIN")
+    if explicit:
+        return str(explicit) if os.path.exists(str(explicit)) else None
+    return shutil.which("whisperx")
+
+
+def _transcribe_with_whisperx(path: str, artifacts: Dict[str, Any], transcription: Dict[str, Any]) -> Dict[str, Any]:
+    executable = _resolve_whisperx_executable(transcription)
+    if not executable:
+        return {
+            "success": False,
+            "status": "skipped",
+            "backend": "whisperx",
+            "reason": (
+                "whisperx not found. It needs its own virtualenv on Python "
+                "3.10-3.13; point WHISPERX_BIN at that venv's whisperx."
+            ),
+        }
+    work_dir = os.path.join(
+        os.path.dirname(artifacts.get("transcript_json") or artifacts["analysis_json"]),
+        "whisperx-work",
+    )
+    os.makedirs(work_dir, exist_ok=True)
+    argv = _whisperx_argv(executable, path, work_dir, transcription)
+    env = _whisperx_env(transcription)
+    code, _, stderr = _run_command(argv, timeout=int(transcription.get("timeout", 1800)), env=env)
+    if code != 0:
+        return {"success": False, "backend": "whisperx", "error": stderr.strip() or "whisperx failed"}
+    json_files = sorted(Path(work_dir).glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+    if not json_files:
+        return {"success": False, "backend": "whisperx", "error": "whisperx produced no JSON output"}
+    raw = _read_json(str(json_files[0]))
+    payload = _normalize_transcript_payload(raw, "whisperx", transcription.get("language"))
+    _write_transcript_artifacts(payload, artifacts)
+    return payload
+
+
 def _transcribe_with_whisper_cli(path: str, artifacts: Dict[str, Any], transcription: Dict[str, Any]) -> Dict[str, Any]:
     whisper = shutil.which("whisper")
     if not whisper:
@@ -3988,7 +4135,7 @@ def _transcribe(path: str, artifacts: Dict[str, Any], options: Dict[str, Any], c
             payload = {"success": True, "backend": backend, "language": transcription.get("language", "unknown"), "segments": segments, "text": " ".join(s.get("text", "") for s in segments)}
             _write_transcript_artifacts(payload, artifacts)
             return payload
-        if backend in {"whisper_cli", "mlx_whisper"}:
+        if backend in {"whisper_cli", "mlx_whisper", "whisperx"}:
             if not _coerce_bool(transcription.get("allow_model_download"), default=False):
                 return {
                     "success": False,
@@ -3998,6 +4145,11 @@ def _transcribe(path: str, artifacts: Dict[str, Any], options: Dict[str, Any], c
                 }
             if backend == "whisper_cli":
                 return _transcribe_with_whisper_cli(path, artifacts, transcription)
+            # whisperx pulls three sets of weights, not one: the ASR model, the
+            # per-language alignment model, and the diarization pipeline. The
+            # gate above covers all of them.
+            if backend == "whisperx":
+                return _transcribe_with_whisperx(path, artifacts, transcription)
             return _transcribe_with_mlx_whisper(path, artifacts, transcription)
         return {"success": False, "status": "fallthrough", "backend": backend}
 
@@ -4029,7 +4181,7 @@ def _transcribe(path: str, artifacts: Dict[str, Any], options: Dict[str, Any], c
     # original branches below so behaviour stays identical for those.
     if result is not None and result.get("status") != "fallthrough":
         return result
-    if backend in {"mock", "local_mock", "whisper_cli", "mlx_whisper"}:
+    if backend in {"mock", "local_mock", "whisper_cli", "mlx_whisper", "whisperx"}:
         return result if result is not None else {"success": False, "backend": backend}
     elif backend == "whisper_cpp":
         if not transcription.get("model_path"):
