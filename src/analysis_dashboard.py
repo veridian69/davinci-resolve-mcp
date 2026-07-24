@@ -1235,6 +1235,21 @@ HTML = r"""<!doctype html>
       color: var(--text-tertiary);
       font-size: 11px;
     }
+    .inproc-log {
+      margin: var(--space-2) 0 0;
+      padding: var(--space-3);
+      background: var(--bg-base);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-md);
+      max-height: 220px;
+      overflow: auto;
+      font-family: var(--font-mono, monospace);
+      font-size: 11px;
+      line-height: 1.5;
+      color: var(--text-secondary);
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
     .pill-legend {
       display: flex;
       flex-wrap: wrap;
@@ -5719,7 +5734,53 @@ HTML = r"""<!doctype html>
               ${tr.networked ? 'Stop networked' : 'Start networked'}</button>
           </div>
         </div>`;
-      setHtml('diagnosticsMcpServer', serverCard + resolveCard + transportCard);
+      const ip = data.inproc || { configured: false };
+      let inprocCard = '';
+      if (ip.configured) {
+        const tone = ip.reachable ? 'pill-ok' : (ip.pid_alive ? 'pill-warn' : 'pill-mute');
+        const label = ip.reachable ? 'Serving' : (ip.pid_alive ? 'Process alive, not answering' : 'Not running');
+        const startedText = ip.started_at
+          ? new Date(ip.started_at * 1000).toLocaleString()
+          : '—';
+        const logHtml = (ip.log_tail && ip.log_tail.length)
+          ? `<pre class="inproc-log">${escapeHtml(ip.log_tail.join(''))}</pre>`
+          : '<div class="empty">No log lines yet.</div>';
+        inprocCard = `
+          <div class="diag-card">
+            <div class="diag-card-header">
+              <div class="diag-card-title">${DIAG_ICONS.connection}In-process bridge (free edition)</div>
+              ${statusPill(tone, label)}
+            </div>
+            <div class="diag-card-rows">
+              ${diagRow('URL', ip.url || '—')}
+              ${diagRow('Token', ip.token || '—')}
+              ${diagRow('PID', ip.pid ?? '—')}
+              ${diagRow('Started', startedText)}
+            </div>
+            <div class="diag-card-footer">
+              <span>Read-only: this dashboard runs as a separate process and cannot start
+                or stop the bridge. Boot or reload it from Resolve's own console
+                (Workspace &gt; Console &gt; Py3) with resolve_console_boot.py.</span>
+            </div>
+            <div class="settings-subhead" style="margin-top:16px">Log tail (.inproc/inproc.log)</div>
+            ${logHtml}
+          </div>`;
+      } else {
+        inprocCard = `
+          <div class="diag-card">
+            <div class="diag-card-header">
+              <div class="diag-card-title">${DIAG_ICONS.connection}In-process bridge (free edition)</div>
+              ${statusPill('pill-mute', 'Not configured')}
+            </div>
+            <div class="diag-card-footer">
+              <span>No .inproc/transport.json in this checkout. Applies only to
+                DaVinci Resolve free-edition installs using the in-process bridge --
+                see README-FREE-EDITION.md.</span>
+            </div>
+          </div>`;
+      }
+
+      setHtml('diagnosticsMcpServer', serverCard + resolveCard + transportCard + inprocCard);
       serverEl.querySelectorAll('.transport-toggle-btn').forEach(btn => {
         btn.addEventListener('click', () => toggleTransport(btn.dataset.transportAction, btn).catch(alertError));
       });
@@ -14398,7 +14459,76 @@ def _mcp_status_payload() -> Dict[str, Any]:
         },
         "clients": clients_out,
         "transport": _transport_status(),
+        "inproc": _inproc_status(),
     }
+
+
+def _inproc_status() -> Dict[str, Any]:
+    """Read-only status of the in-process bridge (src/inproc/), for free-edition
+    Resolve installs where the server runs inside Resolve's own console rather
+    than as a process this dashboard could spawn.
+
+    This dashboard is a separate process from Resolve, so it cannot start or
+    stop that bridge -- only report what .inproc/transport.json says and, if a
+    pid is alive, confirm the server actually answers rather than trusting a
+    stale file. A live pid does not prove the HTTP server inside it is up.
+    """
+    state_path = os.path.join(_repo_root(), ".inproc", "transport.json")
+    try:
+        with open(state_path, encoding="utf-8") as fh:
+            state = json.load(fh)
+    except (OSError, ValueError):
+        return {"configured": False}
+
+    pid = state.get("pid")
+    pid_alive = False
+    if isinstance(pid, int):
+        try:
+            os.kill(pid, 0)
+            pid_alive = True
+        except (OSError, ProcessLookupError):
+            pid_alive = False
+
+    reachable = False
+    if pid_alive and state.get("url"):
+        reachable = _inproc_probe_reachable(state["url"])
+
+    log_path = os.path.join(_repo_root(), ".inproc", "inproc.log")
+    log_tail: List[str] = []
+    try:
+        with open(log_path, encoding="utf-8", errors="replace") as fh:
+            log_tail = fh.readlines()[-20:]
+    except OSError:
+        pass
+
+    return {
+        "configured": True,
+        "pid_alive": pid_alive,
+        "reachable": reachable,
+        "url": state.get("url"),
+        "token": state.get("token"),
+        "pid": pid,
+        "started_at": state.get("started_at"),
+        "state_path": state_path,
+        "log_path": log_path if log_tail else None,
+        "log_tail": log_tail,
+    }
+
+
+def _inproc_probe_reachable(url: str) -> bool:
+    """A short, unauthenticated GET against /mcp. The bridge's bearer-auth
+    middleware answers 401 for any request without a token -- same check
+    src/inproc/selftest.py uses to prove the server thread is actually
+    serving, not just that a pid happens to be alive."""
+    import urllib.error
+    import urllib.request
+    try:
+        urllib.request.urlopen(f"{url.rstrip('/')}/mcp", timeout=1.5)
+        return True  # unexpected, but still means something answered
+    except urllib.error.HTTPError as exc:
+        return exc.code == 401
+    except Exception:
+        return False
 
 
 def _transport_status() -> Dict[str, Any]:
