@@ -70,7 +70,10 @@ class PyRemoteObject:
                 time.sleep(FAKE_CALL_DELAY)
             if attr in self._responses:
                 value = self._responses[attr]
-                return value() if callable(value) else value
+                # Forwarded so a response can behave like the real Resolve
+                # method it stands in for, e.g. GetClipProperty(propertyName)
+                # answering based on which property was actually asked for.
+                return value(*args, **kwargs) if callable(value) else value
             return PyRemoteObject(f"{self._type_name}.{attr}")
 
         return call
