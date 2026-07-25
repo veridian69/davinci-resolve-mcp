@@ -263,7 +263,7 @@ def close_project() -> str:
     
     # Close the project
     try:
-        result = project_manager.CloseProject(current_project)
+        result = pm.CloseProject(current_project)
         if result:
             logger.info(f"Project '{project_name}' closed successfully")
             return f"Successfully closed project '{project_name}'"
