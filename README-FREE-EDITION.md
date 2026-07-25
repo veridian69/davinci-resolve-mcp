@@ -244,6 +244,40 @@ Verified with a fake Resolve outside the console before ever pasting it into
 a real one: the boot ran clean, the server came up on its own thread, and it
 actually answered `HTTP 200` over a real socket while alive.
 
+## The compound MCP server, in-process
+
+The granular bridge above serves the 341+ one-tool-per-method surface. A
+second, separate FastMCP instance in `src/server.py` — the "compound" server —
+holds 34 different tools, including `edit_engine` (plans and executes cuts
+from a transcript's silences), `analysis_store` (the transcript/speaker
+database), and `strata_story`. None of that is reachable through the granular
+bridge; it needs its own boot, on its own port, run alongside it:
+
+```
+INPROC_REPO="/path/to/davinci-resolve-mcp"; exec(open(INPROC_REPO+"/compound_console_boot.py").read())
+```
+
+Installs the shim itself if neither of the other two boots has already, so
+order does not matter. Runs on port `8768` by default — separate from the
+granular bridge's `8765` and the dashboard's `8766` — with its own bearer
+token: a client authorized for the 343 granular tools should not
+automatically also reach `edit_engine` and the rest of the compound surface
+without a separate, explicit grant.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `COMPOUND_MCP_HOST` | `127.0.0.1` | binding off loopback exposes Resolve on the network |
+| `COMPOUND_MCP_PORT` | `8768` | |
+| `COMPOUND_MCP_TOKEN` | `.inproc/compound_token` | overrides the persisted bearer token |
+| `INPROC_COMPOUND_STATE_NAME` | `compound_transport.json` | under `.inproc/` |
+| `INPROC_COMPOUND_LOG_NAME` | `compound.log` | under `.inproc/` |
+
+Verified against a fake Resolve outside the console: the boot ran clean, 33
+of 34 tools were wrapped for threaded dispatch (the 34th is already native
+`async`, so the wrapper skips it — same rule the granular boot's dispatch
+step follows), the server came up, and an unauthenticated request against it
+got the expected `401`.
+
 ## Reloading after a code edit
 
 Re-paste the same line. The boot stops the running server, purges every `src.*`
