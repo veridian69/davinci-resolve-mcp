@@ -114,7 +114,7 @@ before mutating Resolve state.
 | Mode | Entry point | Tool count | Use when |
 |---|---|---|---|
 | Compound (default) | `src/server.py` | 34 tools | Most workflows — keeps context lean |
-| Granular (full) | `src/server.py --full` | 341 tools | Power users needing one tool per API method |
+| Granular (full) | `src/server.py --full` | 343 tools | Power users needing one tool per API method |
 
 This skill document covers the **compound server** (the default). Each compound
 tool accepts an `action` string and an optional `params` object.

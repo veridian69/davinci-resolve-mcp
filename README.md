@@ -3,7 +3,7 @@
 [![Version](https://img.shields.io/badge/version-2.63.0-blue.svg)](https://github.com/samuelgursky/davinci-resolve-mcp/releases)
 [![npm](https://img.shields.io/npm/v/davinci-resolve-mcp.svg?label=npm&color=CB3837)](https://www.npmjs.com/package/davinci-resolve-mcp)
 [![API Coverage](https://img.shields.io/badge/API%20Coverage-100%25-brightgreen.svg)](docs/reference/api-coverage.md)
-[![Tools](https://img.shields.io/badge/MCP%20Tools-34%20(341%20full)-blue.svg)](#server-modes)
+[![Tools](https://img.shields.io/badge/MCP%20Tools-34%20(343%20full)-blue.svg)](#server-modes)
 [![Advanced](https://img.shields.io/badge/Advanced%20(offline)-18%20tools-blueviolet.svg)](#server-modes)
 [![Tested](https://img.shields.io/badge/Live%20Tested-98.5%25-green.svg)](docs/reference/api-coverage.md#test-results)
 [![DaVinci Resolve](https://img.shields.io/badge/DaVinci%20Resolve-18.5+-darkred.svg)](https://www.blackmagicdesign.com/products/davinciresolve)
@@ -18,7 +18,7 @@ A local browser control panel ships with the server for inspecting Resolve state
 
 > ### Using the **free edition**?
 >
-> The setup below needs Resolve **Studio**: the free edition disables the external scripting bridge, so `GetResolve()` returns `None` for any process outside Resolve. This fork adds a second path that runs the server *inside* Resolve's Python console, where that gate does not apply — all 341 granular tools, reads and writes, no Studio licence.
+> The setup below needs Resolve **Studio**: the free edition disables the external scripting bridge, so `GetResolve()` returns `None` for any process outside Resolve. This fork adds a second path that runs the server *inside* Resolve's Python console, where that gate does not apply — all 343 granular tools, reads and writes, no Studio licence.
 >
 > **→ [README-FREE-EDITION.md](README-FREE-EDITION.md)**
 
@@ -57,7 +57,7 @@ The command starts a localhost server and opens the control panel in your browse
 | Mode | Entry point | Tools | Best for |
 |------|-------------|-------|----------|
 | Compound | `src/server.py` | 34 | Default mode for most assistants. Related Resolve operations are grouped behind action parameters to keep context usage low. |
-| Full / granular | `src/server.py --full` or `src/resolve_mcp_server.py` | 341 | Power users who want one MCP tool per Resolve API method. |
+| Full / granular | `src/server.py --full` or `src/resolve_mcp_server.py` | 343 | Power users who want one MCP tool per Resolve API method. |
 
 The compound server is recommended unless you specifically need the granular one-tool-per-method surface.
 
@@ -178,7 +178,7 @@ The default server is a local stdio process launched by your MCP client; it does
 
 | Metric | Value |
 |--------|-------|
-| MCP Tools | **34** compound / **341** granular (live server) |
+| MCP Tools | **34** compound / **343** granular (live server) |
 | Advanced (offline) tools | **18** — .drp/.drt/.drx + DB authoring, no Resolve running |
 | Kernel Actions | **136** guarded workflow actions across 9 compound tools |
 | API Methods Covered | **336/336** (100%) |
