@@ -1,6 +1,12 @@
 """Project, render, cache, cloud, and project-property tools."""
 
 from src.granular.common import *  # noqa: F401,F403
+# Aliased: a @mcp.tool() further down this module is itself named
+# load_cloud_project, which rebinds the module-global name at import time and
+# shadows the helper `from ... import *` brought in above. load_cloud_project_tool
+# needs the helper specifically, not whichever definition happens to win the
+# name last -- see that tool's docstring for the TypeError this caused before.
+from src.utils.cloud_operations import load_cloud_project as _load_cloud_project
 
 resolve = ResolveProxy()
 
@@ -511,13 +517,21 @@ def load_cloud_project_tool(
     Mirrors ProjectManager.LoadCloudProject({cloudSettings}). Per docs line 585,
     only project_name, project_media_path, and sync_mode are honoured.
 
+    Called the cloud_operations helper by its bare name until a separate
+    @mcp.tool() further down this module -- also named load_cloud_project --
+    rebound that module-global at import time. The call below then passed
+    get_resolve() positionally into what had become that tool's project_name
+    parameter, while also passing project_name as a keyword: "got multiple
+    values for argument 'project_name'" on every call. Fixed by importing the
+    helper under its own alias instead of relying on the shared name.
+
     Args:
         project_name: required.
         project_media_path: required.
         sync_mode: 'none', 'proxy_only', or 'proxy_and_orig'.
     """
-    return load_cloud_project(get_resolve(), project_name=project_name,
-                              project_media_path=project_media_path, sync_mode=sync_mode)
+    return _load_cloud_project(get_resolve(), project_name=project_name,
+                               project_media_path=project_media_path, sync_mode=sync_mode)
 
 
 @mcp.tool()
