@@ -205,6 +205,45 @@ project first if that matters to you.
 
 ---
 
+## The analysis dashboard, in-process
+
+`src/analysis_dashboard.py` calls `DaVinciResolveScript.scriptapp("Resolve")`
+itself rather than reusing the granular bridge's handle, so it needs the same
+shim. Run outside the console — a normal Python process, no shim — its
+Overview panel and "Refresh Clips" button show "Resolve unavailable" and
+every count at zero, even with Resolve open and a project loaded. That is not
+a bug: `_connect_resolve_read_only()` is making the same external-process
+scripting call the granular bridge exists to route around, and free edition
+refuses it the same way regardless of who's asking.
+
+Boot the dashboard inside the console instead, the same way as the MCP
+server:
+
+```
+INPROC_REPO="/path/to/davinci-resolve-mcp"; exec(open(INPROC_REPO+"/dashboard_console_boot.py").read())
+```
+
+Prints a url — open it in a normal browser. Runs on port `8766` by default,
+separate from the MCP bridge's `8765`, so both can boot in the same console
+session; order does not matter, since this installs the shim itself if
+`resolve_console_boot.py` has not already. Re-paste the same line to reload
+after editing `src/analysis_dashboard.py` or anything under `src/utils/` it
+imports.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `DASHBOARD_HOST` | `127.0.0.1` | binding off loopback exposes Resolve on the network |
+| `DASHBOARD_PORT` | `8766` | |
+| `DASHBOARD_PROJECT_NAME` | `Dashboard Analysis` | |
+| `DASHBOARD_PROJECT_ID` | `dashboard` | |
+| `DASHBOARD_ANALYSIS_ROOT` | `~/Documents/davinci-resolve-mcp-analysis` | where reports and the job database live |
+| `INPROC_DASHBOARD_STATE_NAME` | `dashboard.json` | under `.inproc/` |
+| `INPROC_DASHBOARD_LOG_NAME` | `dashboard.log` | under `.inproc/` |
+
+Verified with a fake Resolve outside the console before ever pasting it into
+a real one: the boot ran clean, the server came up on its own thread, and it
+actually answered `HTTP 200` over a real socket while alive.
+
 ## Reloading after a code edit
 
 Re-paste the same line. The boot stops the running server, purges every `src.*`
