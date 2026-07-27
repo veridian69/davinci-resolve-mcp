@@ -10,7 +10,6 @@ from src.granular import (
     media_storage,
     project,
     resolve_control,
-    subtitles,
     timeline,
     timeline_item,
 )

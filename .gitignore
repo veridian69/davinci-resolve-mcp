@@ -115,6 +115,3 @@ davinci-resolve-mcp-analysis/
 # capture script, and one-off repro scripts. Never shipped. See local/README.md.
 /local/
 .claude/launch.json
-
-# In-process console bridge: vendored deps, logs, transport state
-.inproc/
