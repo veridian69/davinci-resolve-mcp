@@ -69,7 +69,20 @@ def _print_registrations(report):
 
     print(f"  state dir           : {report.get('state_dir')}")
     print(f"  autolaunch guarded  : {len(guarded)} {guarded}")
-    print(f"  detect_capabilities : rebound in {len(rebound)} {rebound}")
+    # Say WHY the count is what it is. A bare "0" is ambiguous between the
+    # correct case (no captor is loaded in this boot, so a later import binds
+    # the wrapper on its own) and the catastrophic one (the rebind broke, and
+    # whisperX is silently reported absent). Those must not print the same.
+    import free_edition.integrate as _integrate
+    _loaded = [n for n in _integrate.DETECT_CAPABILITIES_CAPTORS
+               if n in sys.modules]
+    if not _loaded:
+        _why = "none loaded in this boot; a later import binds the wrapper"
+    elif sorted(rebound) == sorted(_loaded):
+        _why = f"all {len(_loaded)} loaded captors"
+    else:
+        _why = f"MISSED {sorted(set(_loaded) - set(rebound))} -- see problems below"
+    print(f"  detect_capabilities : rebound in {len(rebound)} ({_why})")
     print(f"  _transcribe patched : {bool(whisperx.get('transcribe'))}")
     for problem in report.get("problems") or []:
         print(f"  PROBLEM: {problem}")
