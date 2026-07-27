@@ -1,7 +1,7 @@
 """Project, render, cache, cloud, and project-property tools."""
 
 from src.granular.common import *  # noqa: F401,F403
-# Aliased: a @mcp.tool() further down this module is itself named
+# Aliased: a tool decorated further down this module is itself named
 # load_cloud_project, which rebinds the module-global name at import time and
 # shadows the helper `from ... import *` brought in above. load_cloud_project_tool
 # needs the helper specifically, not whichever definition happens to win the
@@ -518,7 +518,7 @@ def load_cloud_project_tool(
     only project_name, project_media_path, and sync_mode are honoured.
 
     Called the cloud_operations helper by its bare name until a separate
-    @mcp.tool() further down this module -- also named load_cloud_project --
+    tool decorated further down this module -- also named load_cloud_project --
     rebound that module-global at import time. The call below then passed
     get_resolve() positionally into what had become that tool's project_name
     parameter, while also passing project_name as a keyword: "got multiple
