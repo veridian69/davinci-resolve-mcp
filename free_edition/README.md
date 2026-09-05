@@ -1,0 +1,448 @@
+# Running the MCP server on DaVinci Resolve **free edition**
+
+The upstream server talks to Resolve through the external scripting bridge,
+which the free edition disables. This fork adds a second way in: the server runs
+**inside Resolve's own Python console**, where the `resolve` object already
+exists and the licence gate is never consulted.
+
+Nothing about the upstream path changes. If you have Studio and
+`Preferences > General > External scripting using = Local` works for you, use
+the [main README](../README.md) — it is simpler. This document is for everyone
+whose `GetResolve()` returns `None`.
+
+Design, evidence, and measurements:
+[`docs/specs/2026-07-24-resolve-inproc-mcp-design.md`](docs/specs/2026-07-24-resolve-inproc-mcp-design.md).
+
+---
+
+## Why the free edition needs this
+
+Resolve free ships without Fusion's internal script server, so
+`DaVinciResolveScript.scriptapp("Resolve")` returns `None` for **any external
+process** — a venv, a shell, an MCP server, anything. No amount of environment
+variables fixes it, because the gate is not about paths.
+
+The console sits on the other side of that gate. Open
+**Workspace → Console → Py3** and type `resolve.GetProductName()`: it answers.
+That code runs inside Resolve's process, so it never asks the bridge for a
+handle — it already has one.
+
+So the server moves there. `free_edition/inproc/` registers a fake
+`DaVinciResolveScript` module in `sys.modules` **before** any repo import, which
+hands the repo the console's live handle. The 343 granular tools then work
+unmodified, and a normal HTTP MCP server on loopback serves them to any client.
+
+> **Why 343 and not upstream's 341.** The free edition adds two whisperX
+> subtitle tools, and it adds them at **runtime** — nothing under `src/` is
+> edited. Upstream's static counters (the README badge, `docs/SKILL.md`,
+> `tests/test_import.py`) still read 341, and correctly so: they count the
+> `@mcp.tool()` decorators declared under `src/granular/`, and these two live in
+> `free_edition/subtitles/tools.py`. A boot log that says 343 and a test suite
+> that says 341 are both right.
+
+---
+
+## Daily startup
+
+Once setup is done (see below), starting the server is one paste:
+
+1. Open Resolve, open a project.
+2. **Workspace → Console**, pick **Py3** in the dropdown.
+3. Paste this one line — substitute your own checkout path:
+
+```
+INPROC_REPO="/path/to/davinci-resolve-mcp"; exec(open(INPROC_REPO+"/free_edition/boot/resolve_console_boot.py").read())
+```
+
+> This goes in **Resolve's console**, not a terminal. Pasted into zsh it fails
+> with ``zsh: parse error near `)' ``.
+
+The path is named once and read back because `exec(open(...).read())` leaves no
+`__file__` to derive it from. Hardcoding one in the file would work on exactly
+one machine.
+
+You should see 11 self-test checks, then a url and a token:
+
+```
+DaVinci Resolve MCP -- in-process boot
+  repo    : /path/to/davinci-resolve-mcp
+  log     : /path/to/davinci-resolve-mcp/.inproc/inproc.log
+  modules purged: 0
+  truthful hasattr installed in 12 modules
+
+  utf-8 default encoding  ok    open() default was US-ASCII, now utf-8
+  shim installed          ok    DaVinciResolveScript resolves to the shim
+  handle identity         ok    granular.resolve is the console handle
+  resolve responds        ok    DaVinci Resolve 21.0.3.7
+  tools registered        ok    343 tools registered
+  threaded dispatch       ok    343 tools wrapped for threaded dispatch
+  truthful hasattr        ok    PyRemoteObject exposes 34 methods; missing ones now report False
+  live API call           ok    current project: New Project 1
+  server thread           ok    serving on http://127.0.0.1:8765
+  rejects anonymous       ok    anonymous request got 401, wanted 401
+  accepts token           ok    authenticated request accepted
+
+SELF-TEST PASSED -- 11 checks
+
+  url   : http://127.0.0.1:8765
+  token : <your token>   (file)
+  state : /path/to/davinci-resolve-mcp/.inproc/transport.json
+
+  re-paste the same exec(...) line to reload after edits
+```
+
+If any line reads `FAIL`, the last line names which checks failed. The server
+still starts — the self-test reports, it does not gate.
+
+The server lives and dies with Resolve. Quit Resolve and it is gone; re-paste to
+get it back. There is no daemon, no launchd job, nothing to clean up.
+
+---
+
+## First-time setup on a new machine
+
+### 1. Find the interpreter Resolve's console uses
+
+In the console (Py3), paste:
+
+```
+exec(open("/path/to/davinci-resolve-mcp/free_edition/tools/probe_console.py").read())
+```
+
+Read `sys.prefix` out of the output. On macOS with Resolve 21 it is
+`/Library/Frameworks/Python.framework/Versions/3.14`.
+
+The dependencies must be built with **that** interpreter, not whatever `python3`
+your shell resolves to — the wheels carry ABI tags and the console refuses
+mismatched ones.
+
+`sys.executable` points at the Resolve binary rather than a Python. That is
+normal for an embedded interpreter, and it is why the next step needs an
+explicit path instead of reusing `sys.executable`.
+
+### 2. Vendor the dependencies
+
+From a normal shell, in the repo root:
+
+```bash
+python3 free_edition/tools/setup_inproc.py --python /path/from/step/1/bin/python3
+```
+
+Installs `mcp[cli]` and its 34 dependencies into `.inproc/deps` (~53 MB). No
+sudo, nothing added to the system framework, nothing outside the repo.
+
+`.inproc/` ignores itself: `setup_inproc.py` writes a `.inproc/.gitignore`
+containing a single `*`, so the deps, logs, transport state, and token all stay
+local without the repository's root `.gitignore` needing a line for them. That
+is deliberate — the root `.gitignore` is an upstream file and this fork does not
+touch upstream files.
+
+> `pip install --user` will **not** work here: the console's `sys.path` does not
+> include the user site-packages directory, so the install would be invisible to
+> it. Hence a target directory the boot adds explicitly.
+
+Confirm the ABI tags match:
+
+```bash
+python3 free_edition/tools/setup_inproc.py --check
+```
+
+### 3. Boot the server
+
+The paste line from [Daily startup](#daily-startup) above.
+
+The bearer token is generated on the first boot, written to `.inproc/token` with
+mode `600`, and reused on every boot after that. A token that rotated every boot
+would invalidate every client config, and Resolve is a GUI app so it never sees
+a shell's exported variables — the file is what makes the config stay valid.
+
+### 4. Point a client at it
+
+The MCP endpoint is the url from the boot output **plus `/mcp`**:
+`http://127.0.0.1:8765/mcp`.
+
+**Claude Code** — run this from the directory you want the server available in:
+
+```bash
+claude mcp add --transport http davinci-resolve \
+  http://127.0.0.1:8765/mcp \
+  --header "Authorization: Bearer $(cat /path/to/davinci-resolve-mcp/.inproc/token)"
+```
+
+`claude mcp add` defaults to **local scope**, so the server appears only in
+sessions started from that directory. Pass `--scope user` to get it everywhere.
+Restart the session for the tools to show up.
+
+**Claude Desktop** — it speaks stdio only, so it needs `mcp-remote` as a bridge.
+Requires Node. Edit
+`~/Library/Application Support/Claude/claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "davinci-resolve": {
+      "command": "npx",
+      "args": [
+        "-y", "mcp-remote",
+        "http://127.0.0.1:8765/mcp",
+        "--header", "Authorization: Bearer YOUR_TOKEN_HERE"
+      ]
+    }
+  }
+}
+```
+
+Substitute the contents of `.inproc/token` for `YOUR_TOKEN_HERE`, then restart
+Claude Desktop.
+
+**claude.ai in a browser cannot reach this.** The server is bound to loopback on
+your machine and the web app runs on Anthropic's. Exposing it through a tunnel
+would put control of your Resolve install on the public internet behind nothing
+but a bearer token — don't.
+
+### 5. Verify from outside Resolve
+
+```bash
+/path/from/step/1/bin/python3 free_edition/tools/verify_live.py --no-write
+```
+
+Reads `.inproc/transport.json` for the endpoint and token, connects as a real
+MCP client, and exercises read-only tools.
+
+Drop `--no-write` to also run the write path: it creates a timeline, adds a
+marker, reads both back, then deletes them and confirms the project returned to
+its baseline. It writes to whatever project is currently open, so open a scratch
+project first if that matters to you.
+
+---
+
+## The analysis dashboard, in-process
+
+`src/analysis_dashboard.py` calls `DaVinciResolveScript.scriptapp("Resolve")`
+itself rather than reusing the granular bridge's handle, so it needs the same
+shim. Run outside the console — a normal Python process, no shim — its
+Overview panel and "Refresh Clips" button show "Resolve unavailable" and
+every count at zero, even with Resolve open and a project loaded. That is not
+a bug: `_connect_resolve_read_only()` is making the same external-process
+scripting call the granular bridge exists to route around, and free edition
+refuses it the same way regardless of who's asking.
+
+Boot the dashboard inside the console instead, the same way as the MCP
+server:
+
+```
+INPROC_REPO="/path/to/davinci-resolve-mcp"; exec(open(INPROC_REPO+"/free_edition/boot/dashboard_console_boot.py").read())
+```
+
+Prints a url — open it in a normal browser. Runs on port `8766` by default,
+separate from the MCP bridge's `8765`, so both can boot in the same console
+session; order does not matter, since this installs the shim itself if
+`resolve_console_boot.py` has not already. Re-paste the same line to reload
+after editing `src/analysis_dashboard.py` or anything under `src/utils/` it
+imports.
+
+The in-process status card the dashboard grows is **not** an edit to
+`src/analysis_dashboard.py`. `free_edition/dashboard/` injects its CSS and
+JavaScript into the served HTML at boot and wraps the status payload, which is
+why that upstream file stays byte-identical to the fork point.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `DASHBOARD_HOST` | `127.0.0.1` | binding off loopback exposes Resolve on the network |
+| `DASHBOARD_PORT` | `8766` | |
+| `DASHBOARD_PROJECT_NAME` | `Dashboard Analysis` | |
+| `DASHBOARD_PROJECT_ID` | `dashboard` | |
+| `DASHBOARD_ANALYSIS_ROOT` | `~/Documents/davinci-resolve-mcp-analysis` | where reports and the job database live |
+| `INPROC_DASHBOARD_STATE_NAME` | `dashboard.json` | under `.inproc/` |
+| `INPROC_DASHBOARD_LOG_NAME` | `dashboard.log` | under `.inproc/` |
+
+Verified with a fake Resolve outside the console before ever pasting it into
+a real one: the boot ran clean, the server came up on its own thread, and it
+actually answered `HTTP 200` over a real socket while alive.
+
+## The compound MCP server, in-process
+
+The granular bridge above serves the 343-tool one-tool-per-method surface. A
+second, separate FastMCP instance in `src/server.py` — the "compound" server —
+holds 34 different tools, including `edit_engine` (plans and executes cuts
+from a transcript's silences), `analysis_store` (the transcript/speaker
+database), and `strata_story`. None of that is reachable through the granular
+bridge; it needs its own boot, on its own port, run alongside it:
+
+```
+INPROC_REPO="/path/to/davinci-resolve-mcp"; exec(open(INPROC_REPO+"/free_edition/boot/compound_console_boot.py").read())
+```
+
+Installs the shim itself if neither of the other two boots has already, so
+order does not matter. Runs on port `8768` by default — separate from the
+granular bridge's `8765` and the dashboard's `8766` — with its own bearer
+token: a client authorized for the 343 granular tools should not
+automatically also reach `edit_engine` and the rest of the compound surface
+without a separate, explicit grant.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `COMPOUND_MCP_HOST` | `127.0.0.1` | binding off loopback exposes Resolve on the network |
+| `COMPOUND_MCP_PORT` | `8768` | |
+| `COMPOUND_MCP_TOKEN` | `.inproc/compound_token` | overrides the persisted bearer token |
+| `INPROC_COMPOUND_STATE_NAME` | `compound_transport.json` | under `.inproc/` |
+| `INPROC_COMPOUND_LOG_NAME` | `compound.log` | under `.inproc/` |
+
+Verified against a fake Resolve outside the console: the boot ran clean, 33
+of 34 tools were wrapped for threaded dispatch (the 34th is already native
+`async`, so the wrapper skips it — same rule the granular boot's dispatch
+step follows), the server came up, and an unauthenticated request against it
+got the expected `401`.
+
+## Reloading after a code edit
+
+Re-paste the same line. The boot stops the running server, purges every `src.*`
+**and `free_edition.*`** module from `sys.modules`, and re-imports. Existing MCP
+clients reconnect on their own.
+
+Both prefixes matter. Purging only `src.*` would leave a stale
+`free_edition.integrate` bound to the *old* `src.utils.media_analysis`, so a
+freshly imported upstream module would silently lose every runtime registration.
+
+The purge is why editing `free_edition/inproc/` does not require restarting
+Resolve. It also means a syntax error in your edit surfaces as a failed boot
+with a traceback, leaving no server running — re-paste after fixing.
+
+---
+
+## Configuration
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `INPROC_REPO` | none (required) | checkout path; set by the paste line itself |
+| `DAVINCI_MCP_TOKEN` | `.inproc/token` | overrides the persisted bearer token |
+| `DAVINCI_MCP_HOST` | `127.0.0.1` | **binding off loopback exposes Resolve on the network** |
+| `DAVINCI_MCP_PORT` | `8765` | |
+| `INPROC_LOG_NAME` | `inproc.log` | log filename under `.inproc/` |
+| `INPROC_STATE_NAME` | `transport.json` | endpoint file clients read |
+| `INPROC_TOKEN_NAME` | `token` | token filename |
+
+Resolve does not inherit a shell's exported variables, so in practice the
+file-based token is the one that matters. The last three exist so the offline
+harness cannot overwrite the real server's identity.
+
+---
+
+## Troubleshooting
+
+**`UnicodeDecodeError` on the paste.** The console's `open()` defaults to
+US-ASCII, because `locale.getencoding()` returns `US-ASCII` in Resolve's
+environment. `resolve_console_boot.py` is deliberately ASCII-only for exactly
+this reason — it gets read before any encoding fix can exist. If you edited it,
+you introduced a non-ASCII character. Modules imported later are exempt: Python
+always reads source files as UTF-8.
+
+**`no 'resolve' in the console namespace`.** Wrong dropdown. Pick **Py3**, not
+Lua and not Py2.
+
+**`dependencies missing at .../.inproc/deps`.** Step 2 was skipped, or
+`INPROC_REPO` points at a different checkout than the one you installed into.
+
+**`does not look like the checkout: no free_edition/inproc in it`.**
+`INPROC_REPO` is pointing somewhere that is not the repo root. It wants the
+checkout root — the directory holding both `src/` and `free_edition/` — not the
+`free_edition/boot/` directory the paste line reads from.
+
+**`port 8765 is already bound`.** A server from a previous session is still
+alive and the console lost its handle — typically after Resolve reloaded the
+console namespace. Quit and reopen Resolve, or boot on another port with
+`DAVINCI_MCP_PORT` (and update your client config to match).
+
+**Boot prints nothing after `modules purged`.** It is still importing. The
+granular surface takes under a second normally; longer means Resolve is busy
+with something else.
+
+**A tool returns `TypeError: 'NoneType' object is not callable`.** That method
+does not exist in your edition. Resolve's `PyRemoteObject` returns `None` for
+any unknown attribute instead of raising, which is why `hasattr()` is always
+`True` and every version guard in the repo silently takes the "new API" branch.
+The boot installs a truthful `hasattr` so guarded call sites return a clear
+message instead — but only the call sites that have a guard.
+
+**Nothing appears in the console but the server works.** Output from background
+threads goes to `.inproc/inproc.log`, not the console. Fusion's `fu_stdout` is
+bound to the console's thread through a PyCapsule and raises `SystemError` when
+written from anywhere else, so the boot routes off-thread writes to the file.
+When a tool misbehaves, that log is where the traceback is.
+
+**Client connects but lists no tools.** Restart the client session. Both Claude
+Code and Claude Desktop enumerate tools at startup only.
+
+**The subtitle tools are missing from the tool list.** The boot printed a
+`free-edition tools registered:` line — if it says `0`, `free_edition.integrate`
+ran before `src.granular` finished importing, or it failed and the traceback is
+in `.inproc/inproc.log`.
+
+---
+
+## What works on the free edition
+
+Measured on Resolve 21.0.3.7, macOS, via `free_edition/tools/sweep_free_edition.py`:
+
+- **343 tools** registered and advertised — upstream's 341 granular tools plus
+  the two whisperX subtitle tools this fork registers at runtime
+- **60 / 60** read-only tools swept, all passed
+- Writes verified end to end: create timeline → add marker → read back → delete
+  marker → delete timeline by `unique_id` → confirm baseline restored
+- Calls serialized under a single lock, because the Resolve API is not
+  thread-safe; verified by a test that fails when the lock is removed
+
+**Not verified: 35 of the 38 tools that depend on Studio-only features** —
+transcription, neural engine (Magic Mask, Smart Reframe), voice isolation, Super
+Scale, cloud projects, Dolby Vision, stereoscopic 3D. They are all in the write
+and destructive classes, so the sweep does not call them, and they were not
+tested by hand either.
+
+The *getters* for those features do work. The licence gate is on doing, not on
+asking.
+
+---
+
+## Repo layout
+
+Everything below is new. Nothing outside `free_edition/` is touched.
+
+| Path | What it is |
+|---|---|
+| `free_edition/integrate.py` | runtime registration: the whole reason no upstream file changes |
+| `free_edition/boot/resolve_console_boot.py` | the paste target; ASCII-only by necessity |
+| `free_edition/boot/compound_console_boot.py` | same, for the compound server on `8768` |
+| `free_edition/boot/dashboard_console_boot.py` | same, for the analysis dashboard on `8766` |
+| `free_edition/inproc/shim.py` | fake `DaVinciResolveScript` in `sys.modules` |
+| `free_edition/inproc/encoding.py` | UTF-8 default for `open()` |
+| `free_edition/inproc/streams.py` | thread-safe console output |
+| `free_edition/inproc/dispatch.py` | serializes tool calls onto a worker thread |
+| `free_edition/inproc/launcher.py` | uvicorn in a daemon thread, bearer auth |
+| `free_edition/inproc/api_probe.py` | `hasattr` that tells the truth about remote objects |
+| `free_edition/inproc/selftest.py` | the 11 boot checks |
+| `free_edition/subtitles/whisperx.py` | the whisperX backend, registered into upstream at runtime |
+| `free_edition/subtitles/tools.py` | the two MCP tools, registered onto the granular server at runtime |
+| `free_edition/subtitles/timing.py` | extract → source → timeline frame conversions, pure |
+| `free_edition/subtitles/srt.py` | one SRT per speaker |
+| `free_edition/dashboard/status.py` | in-process status for the dashboard's diagnostics panel |
+| `free_edition/dashboard/card.py` | the CSS and JS injected into the dashboard's HTML |
+| `free_edition/tools/probe_console.py` | console probe (interpreter, threads, sockets) |
+| `free_edition/tools/setup_inproc.py` | vendors deps into `.inproc/deps` |
+| `free_edition/tools/verify_live.py` | external MCP client; read and write verification |
+| `free_edition/tools/sweep_free_edition.py` | screens tool names, sweeps the safe ones |
+| `free_edition/tools/fake_console.py` | offline harness; no Resolve needed |
+| `free_edition/docs/specs/` | the design documents |
+| `free_edition/tests/` | this layer's test suite |
+
+**Zero upstream files are modified.** Every hook this layer needs is applied at
+runtime by `free_edition/integrate.py`, which the boot scripts call after
+importing the repo: it registers the two subtitle tools onto the granular
+`FastMCP` instance, installs the whisperX backend into
+`src/utils/media_analysis.py`, and injects the dashboard card. `git diff`
+against the fork point touches nothing outside `free_edition/`, which is what
+keeps this fork merging cleanly with upstream forever.
+
+That runtime layer also neutralizes `_launch_resolve()` — in **both**
+`src/granular/common.py` and its byte-for-byte duplicate in `src/server.py` —
+which would otherwise open a **second** Resolve instance when the in-process
+handle goes stale.
