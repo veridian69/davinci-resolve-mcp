@@ -1,7 +1,8 @@
 """Read-only Resolve MCP -> Ableton MCP film-cue handoff.
 
-Run from the Resolve repo with its Python, passing the Ableton source checkout.
-Requires both apps and the updated Ableton project handler; never inserts cues.
+Run from the Resolve repo with its Python, passing the spikeInAbleton checkout.
+Requires both apps, uv on PATH and the SpikeInAbleton remote script loaded in
+Live; never inserts cues.
 """
 import argparse
 import asyncio
@@ -9,6 +10,7 @@ from contextlib import AsyncExitStack
 import json
 import os
 from pathlib import Path
+import shutil
 import sys
 
 from mcp import ClientSession, StdioServerParameters
@@ -19,14 +21,13 @@ from live_film_cues_validation import payload
 
 async def run(ableton_root, bpm):
     resolve_root = Path(__file__).resolve().parents[1]
-    ableton_python = ableton_root / ".venv/Scripts/python.exe"
-    if not ableton_python.is_file():
-        ableton_python = ableton_root / ".venv/bin/python"
-    assert ableton_python.is_file(), "Ableton virtualenv interpreter not found"
+    assert (ableton_root / "src/spike_in_ableton").is_dir(), "not a spikeInAbleton checkout"
+    uv = shutil.which("uv")
+    assert uv, "uv not found on PATH"
     specifications = [
         StdioServerParameters(command=sys.executable, args=[str(resolve_root / "src/server.py")],
                               cwd=str(resolve_root), env=dict(os.environ, DAVINCI_RESOLVE_MCP_UPDATE_CHECK="0")),
-        StdioServerParameters(command=str(ableton_python), args=["-m", "ableton_mcp"], cwd=str(ableton_root)),
+        StdioServerParameters(command=uv, args=["run", "--no-sync", "--directory", str(ableton_root), "spike-in-ableton"]),
     ]
     async with asyncio.timeout(60), AsyncExitStack() as stack:
         sessions = []
